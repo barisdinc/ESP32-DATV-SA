@@ -55,12 +55,12 @@ any key gives the radio back to the front panel. Without a display the firmware 
 | GND | GND | |
 | OLED SDA | GPIO0 | working (bit-banged I2C, address 0x3C or 0x3D; `OLED_COL_OFFSET` in `oled.h`: 2 for SH1106, 0 for SSD1306) |
 | OLED SCL | GPIO1 | working |
-| EC11 A (CLK / TRA) | GPIO5 | used |
-| EC11 B (DT / TRB) | GPIO6 | used |
-| EC11 push (SW) | GPIO7 | used |
-| Button 1 (K1) | GPIO10 | used |
-| Button 2 (K2) | GPIO20 (RX) | used |
-| Button 3 (K3) | GPIO21 (TX) | used; do not hold it during reset (ROM boot log on TX) |
+| EC11 A (CLK / TRA) | GPIO5 | working |
+| EC11 B (DT / TRB) | GPIO6 | working |
+| EC11 push (SW) | GPIO7 | working |
+| Button 1 (K1) | GPIO10 | working |
+| Button 2 (K2) | GPIO20 (RX) | working |
+| Button 3 (K3) | GPIO21 (TX) | working; do not hold it during reset (ROM boot log on TX) |
 | PA enable | GPIO3 | unchanged |
 
 ```
