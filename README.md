@@ -14,29 +14,53 @@ pre-computed loop (still test card + service name / provider, QPSK 3/4, 333 kS/s
 the firmware. If a PC sends a command over USB, the beacon stops and the original PC-driven mode
 takes over (see [Stand-alone beacon](#stand-alone-beacon)).
 
-**Planned:** an optional front panel with an **LCD** and a **rotary encoder with push button** to select
-frequency, symbol rate, modulation, level and PA enable directly on the device.
+An optional [front panel](#front-panel) (OLED, rotary encoder, three buttons) sets frequency, level,
+symbol rate, pilots, PA enable, service name and provider directly on the device.
 
-### Front panel (work in progress)
+### Front panel
 
-The front panel is a module with an SSD1306 128x64 I2C OLED, an EC11 rotary encoder with push button
-and three buttons. The OLED already works: it shows the transmit state, PA enable, frequency,
-modulation / FEC, symbol rate and the beacon's service name and provider. The screen is drawn just
-before a transmission starts and after it ends (the transmit loops run with interrupts masked).
-Without a display the firmware runs as before. The encoder and buttons are wired but not read yet.
+The front panel is a module with a 128x64 I2C OLED (SSD1306 or SH1106), an EC11 rotary encoder with
+push button and three buttons. Every field on the screen can be changed on the device:
+
+```
+ BEACON TX       PA OFF     beacon on / off (BEACON TX / BEACON noTX), PA enable
+ 2300.500           MHz     frequency, digit by digit (10 MHz ... 1 kHz), kept inside 2300..2450 MHz
+ DVB-S2 QPSK 3/4  -27dB     level, -40 ... +4 dB relative to amplitude 300 (modulation and FEC are fixed)
+ SR 333 kS/s     pilots     symbol rate 125 / 250 / 333 / 400 / 500 kS/s, pilots / noPilots
+ Svc TA7W-TV                service name (up to 17 characters)
+ Prv TA7W-TRABZON           service provider
+```
+
+| Control | Browsing (field underlined) | Editing (field in inverse video) |
+|---|---|---|
+| Encoder | next / previous field | change the value (or the character / digit under the cursor) |
+| K1 (GPIO10) | next field | cursor right |
+| K2 (GPIO20) | previous field | cursor left; on fields without a cursor: cancel; held 0.8 s: cancel |
+| K3 (GPIO21) or encoder push | edit the field | confirm: the beacon restarts with the new value at once |
+
+Confirmed settings are saved in flash (NVS) and survive a reset. The transmit loop runs with
+interrupts masked and cannot follow the encoder: it checks the GPIO interrupt status (edges latched in
+hardware, no interrupt is taken) every half loop, in the LDPC parity of a frame, and resumes on the exact
+symbol schedule. The first touch stops the beacon; it starts again right after a confirm, or 2 s after
+the last input. New pilots, service name or provider are re-encoded on the device (`beacon_enc.c`:
+BB scrambling, BCH, LDPC, PL framing, bit-exact with `host/dvbs2.py`, checked by
+`python3 host/test_beacon_enc.py`). The H.264 test card itself cannot be redrawn on the device and keeps
+the text it was made with. Other symbol rates keep the loop's TS time stamps, which then run faster or
+slower than real time. When the PC takes over over USB the screen shows its frequency and modulation;
+any key gives the radio back to the front panel. Without a display the firmware runs as before.
 
 | Panel pin | ESP32-C3 SuperMini | Status |
 |---|---|---|
 | VCC | 3V3 | **not 5V**: the module's I2C pull-ups go to VCC |
 | GND | GND | |
-| OLED SDA | GPIO0 | working (bit-banged I2C, address 0x3C or 0x3D) |
+| OLED SDA | GPIO0 | working (bit-banged I2C, address 0x3C or 0x3D; `OLED_COL_OFFSET` in `oled.h`: 2 for SH1106, 0 for SSD1306) |
 | OLED SCL | GPIO1 | working |
-| EC11 A (CLK / TRA) | GPIO5 | planned |
-| EC11 B (DT / TRB) | GPIO6 | planned |
-| EC11 push (SW) | GPIO7 | planned |
-| Button 1 | GPIO10 | planned |
-| Button 2 | GPIO20 (RX) | planned |
-| Button 3 | GPIO21 (TX) | planned; do not hold it during reset (ROM boot log on TX) |
+| EC11 A (CLK / TRA) | GPIO5 | used |
+| EC11 B (DT / TRB) | GPIO6 | used |
+| EC11 push (SW) | GPIO7 | used |
+| Button 1 (K1) | GPIO10 | used |
+| Button 2 (K2) | GPIO20 (RX) | used |
+| Button 3 (K3) | GPIO21 (TX) | used; do not hold it during reset (ROM boot log on TX) |
 | PA enable | GPIO3 | unchanged |
 
 ```
@@ -57,7 +81,8 @@ Without a display the firmware runs as before. The encoder and buttons are wired
 ```
 
 The strapping pins GPIO2, GPIO8 (LED) and GPIO9 (BOOT) and the USB pins GPIO18/19 stay free.
-Buttons and encoder switch to GND; the firmware will enable the internal pull-ups. Keep the I2C wires short
+Buttons and encoder switch to GND; the internal pull-ups are enabled. If the encoder turns the wrong way or
+needs two detents per step, change `ENC_DIR` / `ENC_STEPS` in `panel.c`. Keep the I2C wires short
 (10–15 cm), away from the antenna. Pin order differs between SuperMini clones: check the silkscreen.
 
 <p align="center"><img src="docs/standalone.svg" alt="ESP32-DATV-SA block diagram" width="820"></p>

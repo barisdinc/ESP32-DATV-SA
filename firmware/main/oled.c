@@ -1,4 +1,4 @@
-/* SSD1306 128x64 OLED, bit-banged I2C (see oled.h). */
+/* SSD1306 / SH1106 128x64 OLED, bit-banged I2C (see oled.h). */
 #include "oled.h"
 #include <stdint.h>
 #include <string.h>
@@ -17,6 +17,8 @@ static inline void scl(int v) { gpio_set_level(OLED_SCL_GPIO, v); esp_rom_delay_
 static void i2c_start(void) { sda(1); scl(1); sda(0); esp_rom_delay_us(I2C_HALF_US); scl(0); }
 static void i2c_stop(void) { sda(0); scl(1); sda(1); esp_rom_delay_us(I2C_HALF_US); }
 
+void (*oled_byte_hook)(void);
+
 static bool i2c_byte(uint8_t b) {                                /* true: ACK */
     for (int i = 7; i >= 0; --i) {
         sda((b >> i) & 1);
@@ -27,6 +29,7 @@ static bool i2c_byte(uint8_t b) {                                /* true: ACK */
     scl(1);
     const bool ack = gpio_get_level(OLED_SDA_GPIO) == 0;
     scl(0);
+    if (oled_byte_hook) oled_byte_hook();
     return ack;
 }
 
@@ -87,7 +90,7 @@ bool oled_init(void) {
         0xAE,                                                    /* display off */
         0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,                /* clock, 64 lines, no offset, start line 0 */
         0x8D, 0x14,                                              /* charge pump on */
-        0x20, 0x00,                                              /* horizontal addressing */
+        0x20, 0x02,                                              /* SSD1306 page addressing, the only mode the SH1106 has */
         0xA1, 0xC8,                                              /* segment remap, COM scan down: pins at the top */
         0xDA, 0x12, 0x81, 0xCF, 0xD9, 0xF1, 0xDB, 0x40,          /* COM pins, contrast, precharge, VCOMH */
         0xA4, 0xA6, 0x2E, 0xAF,                                  /* RAM content, normal video, no scroll, display on */
@@ -127,16 +130,21 @@ void oled_invert(oled_fb_t *f, int x0, int x1, int page) {
     for (int x = x0 < 0 ? 0 : x0; x < x1 && x < OLED_W; ++x) f->px[page * OLED_W + x] ^= 0xFF;
 }
 
-void oled_hline(oled_fb_t *f, int y) {
-    for (int x = 0; x < OLED_W; ++x) pixel(f, x, y);
+void oled_hseg(oled_fb_t *f, int x0, int x1, int y) {
+    for (int x = x0; x < x1; ++x) pixel(f, x, y);
 }
+
+void oled_hline(oled_fb_t *f, int y) { oled_hseg(f, 0, OLED_W, y); }
 
 void oled_flush(const oled_fb_t *f) {                           /* NULL: blank */
     if (!addr) return;
-    static const uint8_t window[] = {0x21, 0, OLED_W - 1, 0x22, 0, OLED_H / 8 - 1};
-    cmds(window, sizeof(window));
-    i2c_start();
-    if (i2c_byte(addr << 1) && i2c_byte(0x40))                   /* control byte: display data follows */
-        for (size_t i = 0; i < sizeof(f->px); ++i) i2c_byte(f ? f->px[i] : 0);
-    i2c_stop();
+    for (int page = 0; page < OLED_H / 8; ++page) {              /* page by page: the SH1106 does not advance to the next page */
+        const int col = f ? OLED_COL_OFFSET : 0, n = f ? OLED_W : OLED_W + 2 * OLED_COL_OFFSET;
+        const uint8_t at[] = {(uint8_t)(0xB0 | page), (uint8_t)(col & 15), (uint8_t)(0x10 | col >> 4)};
+        cmds(at, sizeof(at));
+        i2c_start();
+        if (i2c_byte(addr << 1) && i2c_byte(0x40))               /* control byte: display data follows */
+            for (int i = 0; i < n; ++i) i2c_byte(f ? f->px[page * OLED_W + i] : 0);
+        i2c_stop();
+    }
 }

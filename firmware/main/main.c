@@ -45,7 +45,8 @@
 #include "heap_memory_layout.h"
 #include "soc/soc.h"
 #include "sample_clock.h"
-#include "oled.h"
+#include "panel.h"
+#include "beacon_enc.h"
 
 /* RF dump bank (ADC capture / DAC playback, librftest adctrig / dactrig):
  * data at 0x3FCB0000. Handing the bank to the RF block (0x600C1020) takes
@@ -91,17 +92,20 @@ static inline uint32_t ccount(void) { return (uint32_t)esp_cpu_get_cycle_count()
 
 /* ------------------------------------------------------------ USB text I/O */
 
+static bool usb_stalled;           /* the last write timed out: no host reads; set back by any byte from the host */
+
 static void usb_write(const void *data, size_t n) {
     const uint8_t *p = data;
     int64_t deadline = esp_timer_get_time() + 500000;
-    while (n) {
+    while (n && !usb_stalled) {
         if (usb_serial_jtag_ll_txfifo_writable()) {
             int w = usb_serial_jtag_ll_write_txfifo(p, n > 64 ? 64 : n);
             usb_serial_jtag_ll_txfifo_flush();
             p += w;
             n -= w;
         } else if (esp_timer_get_time() > deadline) {
-            return;   /* nobody reads */
+            usb_stalled = true;   /* nobody reads: later messages would wait 0.5 s each, also between front panel actions */
+            return;
         }
     }
 }
@@ -1019,93 +1023,95 @@ static void tx_qpsk_lut(uint32_t fkhz, uint32_t baud_req, uint32_t sps, int32_t 
 }
 
 
-/* ------------------------------------------------------------ front panel (oled.c)
- * The transmit loops run with interrupts masked, so the screen is drawn just before a transmission starts and after it ends,
- * never during it. Layout: status (inverse) and PA, frequency in large digits, then four text lines (NULL: empty). */
-static bool panel_ok;
-
-static void panel_show(const char *state, bool pa, uint32_t fkhz, const char *l4, const char *l5, const char *l6, const char *l7) {
-    if (!panel_ok) return;
-    char b[24];
-    oled_fb_t f;
-    oled_clear(&f);
-    oled_text(&f, 1, 0, 1, state);
-    oled_invert(&f, 0, 6 * (int)strlen(state) + 1, 0);
-    const char *pas = pa ? "PA ON" : "PA OFF";
-    oled_text(&f, OLED_W - 6 * (int)strlen(pas), 0, 1, pas);
-    oled_hline(&f, 10);
-    if (fkhz) {
-        snprintf(b, sizeof(b), "%4lu.%03lu", (unsigned long)(fkhz / 1000), (unsigned long)(fkhz % 1000));
-        oled_text(&f, 0, 2, 2, b);
-        oled_text(&f, OLED_W - 18, 3, 1, "MHz");
-    }
-    const char *l[4] = {l4, l5, l6, l7};
-    for (int i = 0; i < 4; ++i)
-        if (l[i]) oled_text(&f, 0, 4 + i, 1, l[i]);
-    oled_flush(&f);
-}
-
-static void panel_sr(char *b, size_t n, uint32_t baud, const char *tail) {
-    snprintf(b, n, "SR %lu kS/s%s", (unsigned long)((baud + 500) / 1000), tail);
-}
+static void sr_text(char *b, size_t n, uint32_t baud) { snprintf(b, n, "SR %lu kS/s", (unsigned long)((baud + 500) / 1000)); }
 
 /* ------------------------------------------------------------ stand-alone beacon (lutb.S, beacon.bin and beacon_cfg.h from host/make_beacon.py)
  * After power-up the ESP transmits a fixed DVB-S2 loop (test card, service name) from RAM, with the generic 8 MS/s loop, until the host
  * sends a byte. The beacon starts again after BEACON_IDLE_US without input, unless a valid command has arrived since power-up: once a host
  * has taken over, only a reset brings the beacon back. */
 #include "beacon_cfg.h"
-#define BEACON_PA 0                     /* 1: GPIO3 (PA enable) high while the beacon transmits */
+#define BEACON_PA 0                     /* 1: GPIO3 (PA enable) high while the beacon transmits (default; the front panel can change it) */
 #define BEACON_IDLE_US 5000000
 extern const uint8_t beacon_bin_start[] asm("_binary_beacon_bin_start");
 extern const uint8_t beacon_bin_end[] asm("_binary_beacon_bin_end");
 extern uint32_t lutb_run_p20(lutg_ctx_t *c);
 static bool host_seen;
 
-static void beacon_run(void) {
+/* Front panel: the settings (panel_cfg) choose frequency, level, symbol rate (8 MS/s / S, any S >= 16), PA, pilots, service name and
+ * provider. The built-in loop is used as it is when pilots, name and provider are those of beacon.bin, else beacon_enc.c re-encodes it.
+ * The loop runs in chunks of half the loop length: between two chunks (with interrupts still off) the GPIO interrupt status tells whether a
+ * panel pin moved. The next chunk starts at the exact time the next symbol is due (the same schedule as within a chunk), so a boundary only
+ * costs the tail of one symbol and the filter history of the next few; both boundaries lie in the LDPC parity of a frame.
+ * Returns 3: a byte from the host, 4: panel input, 0: could not start (the reason is on the screen). */
+static int beacon_fail(const char *msg, void *a, void *b, void *c) {
+    free(a);
+    free(b);
+    free(c);
+    say("ERR beacon %s\r\n", msg);
+    panel_error(msg);
+    return 0;
+}
+
+static int beacon_run(void) {
+    const panel_cfg_t *p = &panel_cfg;
+    const uint32_t baud = panel_sr_baud[p->sr], period = 20, S = CPU_HZ / baud / period;
+    const bool builtin = p->pilots == BEACON_PILOTS && !strcmp(p->service, BEACON_SERVICE) && !strcmp(p->provider, BEACON_PROVIDER);
     const size_t bytes = (size_t)(beacon_bin_end - beacon_bin_start);
-    const uint32_t S = BEACON_SPS, period = 20;
-    if (bytes < BEACON_SYMBOLS / 4u + 4u) { say("ERR beacon data\r\n"); return; }
-    uint8_t *loop = malloc(bytes);                                   /* the big block first */
+    if (bytes < BEACON_SYMBOLS / 4u + 4u) return beacon_fail("bad data", NULL, NULL, NULL);
+    uint8_t *loop = malloc(benc_loop_bytes(p->pilots));             /* the big block first */
+    if (!loop) return beacon_fail("no memory", NULL, NULL, NULL);
+    uint32_t nsym = BEACON_SYMBOLS;
+    if (builtin) memcpy(loop, beacon_bin_start, bytes);              /* flash reads would stall the loop */
+    else if (!(nsym = benc_build(loop, beacon_bin_start, p->pilots, p->service, p->provider))) return beacon_fail("encoder", loop, NULL, NULL);
     int32_t *T = malloc(lutt_bytes(S));
     float *hb = malloc(8 * S * sizeof(float));
-    if (!loop || !T || !hb) { free(loop); free(T); free(hb); say("ERR beacon out of memory\r\n"); return; }
-    memcpy(loop, beacon_bin_start, bytes);                          /* flash reads would stall the loop */
-    lut_build_t(T, S, 0, 0.35f, (float)BEACON_AMP, 0.0f, 0.0f, 1.0f, 0.0f, hb);
+    if (!T || !hb) return beacon_fail("no memory", loop, T, hb);
+    lut_build_t(T, S, 0, 0.35f, (float)panel_amp(), 0.0f, 0.0f, 1.0f, 0.0f, hb);
     free(hb);
-    if (!tune(BEACON_FREQ_KHZ)) { free(loop); free(T); return; }
-    const sample_clock_t symbol_clock = sample_clock_init(CPU_HZ, BEACON_BAUD);
+    if (!tune(p->fkhz)) return beacon_fail("frequency", loop, T, NULL);
+    const sample_clock_t symbol_clock = sample_clock_init(CPU_HZ, baud);
     lutg_ctx_t c;
     memset(&c, 0, sizeof(c));
     for (uint32_t g = 0; g < 4; ++g) c.t[g] = T + g * S * 16;
     c.ring = loop;
-    c.rlim = BEACON_SYMBOLS;                                         /* lutb.S: the loop length in symbols */
+    c.rlim = nsym;                                                   /* lutb.S: the loop length in symbols */
+    c.qr = nsym - 1000;                                              /* start in the LDPC parity of the last frame (frames are even) */
     c.mper = c.mcnt = 2048;
     c.lim = c.lim1 = UINT32_MAX;                                     /* no silence limit */
     c.s64m = 64u * (S - 1);
     c.sper = S * period;
     c.rem = symbol_clock.period == S * period ? symbol_clock.remainder : 0;
     c.div = symbol_clock.period == S * period ? symbol_clock.divisor : 1;
-    char sr[24];
-    panel_sr(sr, sizeof(sr), BEACON_BAUD, BEACON_PILOTS ? " pilots" : "");
-    panel_show("BEACON TX", BEACON_PA, BEACON_FREQ_KHZ, "DVB-S2 QPSK " BEACON_FEC, sr, "Svc " BEACON_SERVICE, "Prv " BEACON_PROVIDER);
+    const uint32_t chunk = nsym / 2;
+    const uint64_t carry = (uint64_t)chunk * c.rem;                 /* a chunk lasts chunk * sper + (phase + carry) / div cycles */
+    const uint32_t chunk_cyc = chunk * c.sper + (uint32_t)(carry / c.div), chunk_rem = (uint32_t)(carry % c.div);
+    panel_error(NULL);
     const uint32_t owner0 = rd(SRAM_OWNER);
-    pa_set(BEACON_PA);
-    if (BEACON_PA) esp_rom_delay_us(5000);
+    pa_set(p->pa);
+    if (p->pa) esp_rom_delay_us(5000);
     phy_txforce(1);
     esp_rom_delay_us(3000);
     DAC_BUF[0] = 0;
+    panel_latch_clear();
     taskENTER_CRITICAL(&stream_mux);
     wr(SRAM_OWNER, (owner0 & ~7u) | 2u | 8u);
     __asm__ volatile("fence rw,rw" ::: "memory");
     wr(DAC_CTRL, rd(DAC_CTRL) & ~(1u << 31));
     wr(DAC_CTRL, 0x80000u | 1u);
     wr(DAC_CTRL, 0x80000u | 1u | (1u << 31));
-    do {                                                             /* the symbol counter runs out after 3.6 hours: go on where it stopped */
-        c.nsym = UINT32_MAX;
+    c.tn = c.trx = ccount() + 20000;
+    uint32_t chunks = 0;
+    int why;
+    for (;;) {
+        const uint32_t tn = c.tn, ph = c.phase;
+        c.nsym = chunk;
         c.exitc = 0;
-        c.tn = c.trx = ccount() + 20000;
         lutb_run_p20(&c);
-    } while (c.exitc != 3);                                          /* 3: a byte from the host */
+        ++chunks;
+        if (c.exitc == 3) { why = 3; break; }                        /* a byte from the host */
+        if (panel_latched()) { why = 4; break; }
+        c.tn = c.trx = tn + chunk_cyc + (ph + chunk_rem >= c.div ? 1u : 0u);
+    }
     const uint32_t late = c.late;
     DAC_BUF[0] = 0;
     wr(DAC_CTRL, rd(DAC_CTRL) & ~(1u << 31));
@@ -1116,8 +1122,8 @@ static void beacon_run(void) {
     tx_leave();
     free(T);
     free(loop);
-    say("BEACON END late %lu symbols %lu\r\n", (unsigned long)late, (unsigned long)(UINT32_MAX - c.nsym));
-    panel_show("STANDBY", false, 0, "PC on USB", NULL, "Svc " BEACON_SERVICE, "Prv " BEACON_PROVIDER);
+    say("BEACON END %s late %lu chunks %lu\r\n", why == 3 ? "host" : "panel", (unsigned long)late, (unsigned long)chunks);
+    return why;
 }
 
 /* ------------------------------------------------------------ commands */
@@ -1155,10 +1161,10 @@ static void handle(char *line) {
         }
         char mod[24], sr[24];
         snprintf(mod, sizeof(mod), "%s from PC", a32 ? "32APSK" : a16 ? "16APSK" : psk8 ? "8PSK" : "QPSK");
-        panel_sr(sr, sizeof(sr), (uint32_t)baud, "");
+        sr_text(sr, sizeof(sr), (uint32_t)baud);
         panel_show("PC TX", pa_enable, fk, mod, sr, "Service set by PC", NULL);
         tx_qpsk_lut(fk, (uint32_t)baud, (uint32_t)sps, (int32_t)amp, (uint32_t)secs, (int32_t)ifm, (int32_t)tgt, (int32_t)dc4i, (int32_t)dc4q, (int32_t)gq, (int32_t)phim, psk8, a16, (uint32_t)gam, a32, (uint32_t)gam2, pa_enable);
-        panel_show("STANDBY", false, fk, mod, sr, "PC on USB", NULL);
+        panel_show("STANDBY", false, fk, mod, sr, "PC on USB", "Any key: local");
     } else {
         host_seen = seen;                                            /* e.g. a modem probe: does not stop the beacon for good */
         pa_requested = false;
@@ -1169,13 +1175,18 @@ static void handle(char *line) {
 
 void app_main(void) {
     pa_init();
-    panel_ok = oled_init();
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         e = nvs_flash_init();
     }
     ESP_ERROR_CHECK(e);
+    const panel_cfg_t defaults = {
+        .tx = 1, .pa = BEACON_PA, .pilots = BEACON_PILOTS, .sr = 2, .fkhz = BEACON_FREQ_KHZ,
+        .level_db = (int8_t)lroundf(20.0f * log10f(BEACON_AMP / 300.0f)), .service = BEACON_SERVICE, .provider = BEACON_PROVIDER,
+    };
+    _Static_assert(BEACON_BAUD == 333000u, "panel_sr_baud[2] is the built-in symbol rate");
+    panel_init(&defaults);                       /* settings saved by the front panel replace the defaults */
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -1186,30 +1197,51 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
     tune(2412000);                               /* the PHY needs a valid channel before the first TX */
-    beacon_run();
 
     char line[128];
     size_t used = 0;
-    int64_t idle_since = esp_timer_get_time();
+    int64_t resume_at = 0;                       /* the beacon may (re)start from this time on */
+    bool failed = false;                         /* it could not start with these settings: wait for new ones */
     for (;;) {
-        uint8_t c;
-        if (!usb_serial_jtag_ll_read_rxfifo(&c, 1)) {
-            if (!host_seen && esp_timer_get_time() - idle_since > BEACON_IDLE_US) {
+        if (!host_seen && panel_cfg.tx && !failed && !panel_busy() && esp_timer_get_time() >= resume_at) {
+            const int why = beacon_run();
+            if (why == 3) {                      /* the host: it gets BEACON_IDLE_US to send a command */
                 used = 0;
-                beacon_run();
-                idle_since = esp_timer_get_time();
+                resume_at = esp_timer_get_time() + BEACON_IDLE_US;
+                panel_show("STANDBY", false, 0, "PC on USB", NULL, "Any key: local", NULL);
+            } else if (why == 4) {
+                panel_wake();
+            } else {
+                failed = true;
             }
-            vTaskDelay(1);
             continue;
         }
-        idle_since = esp_timer_get_time();
-        if (c == '\r') continue;
-        if (c != '\n') {
-            if (used < sizeof(line) - 1) line[used++] = (char)c;
+        uint8_t c;
+        if (usb_serial_jtag_ll_read_rxfifo(&c, 1)) {
+            usb_stalled = false;
+            resume_at = esp_timer_get_time() + BEACON_IDLE_US;
+            if (c == '\r') continue;
+            if (c != '\n') {
+                if (used < sizeof(line) - 1) line[used++] = (char)c;
+                continue;
+            }
+            line[used] = 0;
+            used = 0;
+            if (line[0]) handle(line);
             continue;
         }
-        line[used] = 0;
-        used = 0;
-        if (line[0]) handle(line);
+        switch (panel_poll(host_seen)) {
+        case PANEL_APPLY:                        /* confirmed: start at once with the new values */
+            failed = false;
+            resume_at = 0;
+            break;
+        case PANEL_LOCAL:                        /* a key in host mode: the front panel takes over again */
+            host_seen = false;
+            failed = false;
+            resume_at = 0;
+            panel_draw();
+            break;
+        }
+        vTaskDelay(1);
     }
 }
