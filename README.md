@@ -10,7 +10,7 @@ and it is on the air.
 
 **Current status:** the firmware works as a stand-alone **DVB-S2 beacon**. At power-up it transmits a
 pre-computed loop (still test card + service name / provider, QPSK 3/4, 333 kS/s, pilots,
-2404.750 MHz) from RAM. The loop is generated on the PC once by `host/make_beacon.py` and built into
+2300.500 MHz, low level) from RAM. The loop is generated on the PC once by `host/make_beacon.py` and built into
 the firmware. If a PC sends a command over USB, the beacon stops and the original PC-driven mode
 takes over (see [Stand-alone beacon](#stand-alone-beacon)).
 
@@ -151,10 +151,13 @@ GUI defaults are `TA7W-TV` and `TA7W-TRABZON` (CLI: `ESP32-C3 DATV` and `ESP32-D
 ### Stand-alone beacon
 
 After power-up the firmware transmits a built-in DVB-S2 loop without a PC: QPSK 3/4, 333 kS/s, pilots,
-2404.750 MHz, a still test card and the service `TA7W-TV` / `TA7W-TRABZON`. The loop is 4 PLFRAMEs (0.4 s)
+2300.500 MHz, a still test card and the service `TA7W-TV` / `TA7W-TRABZON`. The loop is 4 PLFRAMEs (0.4 s)
 held in RAM; every repetition restarts the TS time base (flagged with the discontinuity indicator).
 Any byte from the host stops it; after a valid command (the GUI sends `INFO`) it stays off until the next
 reset, otherwise it resumes after 5 s. PA enable (GPIO3) stays low unless `BEACON_PA` in `main.c` is 1.
+The beacon sits at the bottom of the 13 cm band, about 100 MHz below Wi-Fi channel 1, at amplitude 13
+(about −27 dB from the usual 300, the GUI's minimum level), so it does not disturb nearby Wi-Fi.
+Use `--freq` and `--amp` of `make_beacon.py` for another frequency or level.
 To change it, edit and run `python3 host/make_beacon.py` (writes `firmware/main/beacon.bin` and
 `beacon_cfg.h`), then build and flash.
 

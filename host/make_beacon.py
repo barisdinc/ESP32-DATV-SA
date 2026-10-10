@@ -208,12 +208,12 @@ def c_str(s):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--freq", type=float, default=2404.750, help="MHz")
+    ap.add_argument("--freq", type=float, default=2300.500, help="MHz (bottom of the 13 cm band, far from Wi-Fi)")
     ap.add_argument("--baud", type=int, default=333000)
     ap.add_argument("--fec", default="3/4")
     ap.add_argument("--no-pilots", action="store_true")
     ap.add_argument("--frames", type=int, default=4, help="PLFRAMEs in the loop (even; RAM holds about 4 with pilots)")
-    ap.add_argument("--amp", type=int, default=300)
+    ap.add_argument("--amp", type=int, default=13, help="DAC amplitude, 1..480 (13 = -27 dB from the usual 300)")
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--qp", type=int, default=0, help="H.264 QP of the card; 0 = the best that fits")
     ap.add_argument("--service-name", default="TA7W-TV")
