@@ -91,6 +91,10 @@ needs two detents per step, change `ENC_DIR` / `ENC_STEPS` in `panel.c`. Keep th
 
 [![ESP32-DATV-SA video](https://img.youtube.com/vi/6ugd4OvI7S4/hqdefault.jpg)](https://youtu.be/6ugd4OvI7S4)
 
+[![Encoder/display add-on demonstration](https://img.youtube.com/vi/YL8Q4w6yh90/hqdefault.jpg)](https://youtu.be/YL8Q4w6yh90)
+
+**Encoder/display add-on demonstration**
+
 ---
 
 <p align="center"><img src="docs/meme.jpg" alt="Is this a 2.4GHz DATV transmitter? (an ESP32-C3 SuperMini)" width="620"></p>
