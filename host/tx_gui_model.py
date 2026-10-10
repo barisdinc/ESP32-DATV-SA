@@ -60,10 +60,10 @@ def db_from_amp(amp, mod):
 
 @dataclass
 class Settings:
-    freq: float = next(c.uplink for c in CHANNELS if c.name == "W1")
-    baud: int = 1000000
+    freq: float = next(c.uplink for c in CHANNELS if c.name == "N4")
+    baud: int = 333000
     standard: str = "DVB-S2"
-    mod: str = "8psk"
+    mod: str = "qpsk"
     fec: str = "3/4"
     frame: str = "normal"
     pilots: bool = True
@@ -73,7 +73,7 @@ class Settings:
     ppm: float = 0.
     seconds: float = 0.
     port: str = ""
-    source: str = "film"
+    source: str = "test"
     film: str = str(Path(DEMO_FILM).resolve())
     ts: str = ""
     ts_url: str = "udp://0.0.0.0:8888?fifo_size=1000000&overrun_nonfatal=1"
@@ -83,8 +83,8 @@ class Settings:
     camera_format: str = "auto"
     audio_source: str = "none"
     audio_device: str = "default"
-    service_name: str = DEFAULT_SERVICE_NAME
-    service_provider: str = DEFAULT_SERVICE_PROVIDER
+    service_name: str = "TA7W-TV"
+    service_provider: str = "TA7W-TRABZON"
     width: int = 640
     video_k: int = 0
     fps: float = 0.

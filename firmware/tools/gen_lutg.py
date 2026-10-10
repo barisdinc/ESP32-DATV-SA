@@ -17,6 +17,11 @@ the E-to-next-symbol gap also absorbs that extra cycle. At 333000 Bd, S=24 and P
 480 and 481 cycles, averaging 160000/333 cycles (24 samples per symbol, 7.992 MS/s average DAC rate).
 
 usage (from firmware/):  python3 tools/gen_lutg.py > main/lutg.S
+  --beacon       main/lutb.S: the P = 20 QPSK loop for the stand-alone beacon. The symbols come from a RAM loop of RLIM symbols
+                 (ring byte = qr / 4, no mask; a few spare bytes past the end repeat its start) instead of USB; any USB byte ends
+                 the loop (EXITC 3). Same slot costs as the streaming loop, so the same pads apply. Only copy N is
+                 generated (no silence check, no fill reports), and the wrap in N runs every symbol. The code sits in flash
+                 (.text): IRAM is full, and with interrupts off nothing evicts the loop from the cache after its first pass.
   --rec timing   instead of driving the DAC every slot stamps the cycle counter right after the real DAC store and records it
                  (build with "#define LUTG_REC 1" in main.c); the end of the run prints, for every symbol, the slots whose store-to-store
                  spacing differs from P ("slot:cycles") and the nominal length of the sync sled (SLED)
@@ -44,12 +49,14 @@ assert REC in ("none", "timing", "words")
 SCHED = "--nosched" not in sys.argv
 RAW = "--raw" in sys.argv          # no padding at all: the timing build then shows the true cost of every slot
 PSK8 = "--psk8" in sys.argv        # the 8PSK variant: 3 bit symbols (one per nibble in the ring), 6 bit table indices, 256 byte sample stride
+BEACON = "--beacon" in sys.argv    # QPSK from a RAM loop instead of USB (stand-alone beacon)
+assert not (PSK8 and BEACON)
 HERE = os.path.dirname(os.path.abspath(__file__))
 PADFILE = os.path.join(HERE, "lutg_psk8_pads.json" if PSK8 else "lutg_pads.json")
 PADS_ALL = json.load(open(PADFILE)) if os.path.exists(PADFILE) else {}
 
 E = 13               # unrolled event slots per symbol (S >= E + 3)
-FN = "lutg_psk8_run_p" if PSK8 else "lutg_run_p"
+FN = "lutg_psk8_run_p" if PSK8 else "lutb_run_p" if BEACON else "lutg_run_p"
 STRIDE = 256 if PSK8 else 64          # bytes from one sample's table row to the next
 ADJ_SLOT, ADJ = 6, 7 * 256            # 8PSK: the offsets of the unrolled slots would exceed the 12 bit immediate: the row pointers move on after slot 6
 
@@ -238,6 +245,8 @@ def a_qend():                         # end value of s1 for the loop (s1 still a
 
 
 def a_fill():                         # gp = ring has a symbol (not an underrun), a4 = ring has room for a USB packet
+    if BEACON:                        # the loop never runs dry; a4 then is just "a USB byte is waiting" (a_avc)
+        return ["    li   gp, 1", "    li   a4, 1", "    nop", "    nop", "    nop"], 5
     return ["    lw   t6, RLIM(s0)", f"    slli t5, s11, {1 if PSK8 else 2}", "    sub  t5, t5, a7", "    slt  gp, zero, t5", "    slt  a4, t5, t6"], 5
 
 
@@ -246,6 +255,8 @@ def a_nsym(c, r="s5"):                # symbols left; leave when done (s5..s8 ar
 
 
 def a_xa():                           # t6 = ring byte holding the next symbol
+    if BEACON:                        # qr wraps at the loop length (a_sb), not at a power of two
+        return ["    lw   t6, RING(s0)", "    srli t5, a7, 2", "    nop", "    nop", "    add  t5, t5, t6", "    lbu  t6, 0(t5)"], 6
     return ["    lw   t6, RING(s0)", f"    srli t5, a7, {1 if PSK8 else 2}", "    slli t5, t5, 18", "    srli t5, t5, 18", "    add  t5, t5, t6", "    lbu  t6, 0(t5)"], 6
 
 
@@ -291,12 +302,18 @@ def a_avc():
 
 
 def a_rd(c, stubs):                   # read the byte if there is one and the ring has room (balanced with the skip path)
+    if BEACON:                        # a byte from the host ends the beacon; it stays in the FIFO for the command parser
+        ux = lab("ux")
+        stubs.append(f"{ux}:\n    li   t5, 3\n    sw   t5, EXITC(s0)\n    j    lutg{CUR_P}_exit")
+        return [f"    bnez a4, {ux}"] + ["    nop"] * 6, 7
     nd, back = lab("nd"), lab("rb")
     stubs.append(f"{nd}:\n    .rept {PADS.get('RDNOPS', 2)}\n    nop\n    .endr\n    j    {back}")
     return [f"    beqz a4, {nd}", "    lw   gp, 0(a3)", f"{back}:"], 7
 
 
 def a_sb():                           # byte into the ring (harmless garbage when there was none: qw does not move)
+    if BEACON:                        # qr -= RLIM once it reaches the loop length
+        return ["    lw   t6, RLIM(s0)", "    mv   t5, a7", "    sltu t5, t5, t6", "    addi t5, t5, -1", "    and  t6, t6, t5", "    sub  a7, a7, t6"], 6
     return ["    lw   t6, RING(s0)", "    slli t5, s11, 18", "    srli t5, t5, 18", "    add  t5, t5, t6", "    sb   gp, 0(t5)", "    add  s11, s11, a4"], 6
 
 
@@ -544,11 +561,11 @@ def function(P):
     xor  t3, t0, a5             /* word of sample 0 */
     la   t5, .LsEN{P}
     sw   t5, NS_N(s0)
-    la   t5, .LsEA{P}
+    la   t5, .LsE{"N" if BEACON else "A"}{P}
     sw   t5, NS_A(s0)
-    la   t5, .LsEB{P}
+    la   t5, .LsE{"N" if BEACON else "B"}{P}
     sw   t5, NS_B(s0)
-    la   t5, .LsEC{P}
+    la   t5, .LsE{"N" if BEACON else "C"}{P}
     sw   t5, NS_C(s0)
     lw   a1, TN(s0)             /* start of the first symbol; the target of the first measure is one symbol later (base interval added in slot 12) */
     addi a1, a1, -{pads.get('KD', 8)}
@@ -567,7 +584,7 @@ def function(P):
     jalr x0, 0(t6)
 """]
     ends = {}
-    for c in COPIES:
+    for c in (("N",) if BEACON else COPIES):         # the beacon has no silence check or fill reports: every symbol runs copy N
         code, end = copy_code(P, c, pads)
         f.append(code)
     f.append(f"""lutg{P}_exit:
@@ -603,8 +620,10 @@ emit("/* Generated by gen_lutg.py - do not edit by hand (rec mode: " + REC + ").
      " * Tables: 4 groups x 16 rows x S words (RRC span 8). Context: struct lutg_ctx_t in main.c. */" % MIN_S)
 for k, v in CTX.items():
     emit(f"    .equ {k}, {v}")
-emit(f'    .section .iram1.{"lutg_psk8" if PSK8 else "lutg"}, "ax"\n    .option norvc')
-for P in ((20,) if PSK8 else (20, 24)):
+# The beacon loop runs from flash: IRAM is full, and while it runs (interrupts off) nothing else evicts its 1.7 KB from the cache.
+emit(f'    .section {".text.lutb" if BEACON else ".iram1.lutg_psk8" if PSK8 else ".iram1.lutg"}, "ax"\n    .option norvc')
+for P in ((20,) if PSK8 or BEACON else (20, 24)):
     emit(function(P))
 print("\n".join(o))
-json.dump(EFFECTIVE, open(os.path.join(HERE, "lutg_psk8_pads_used.json" if PSK8 else "lutg_pads_used.json"), "w"), indent=0)
+if not BEACON:
+    json.dump(EFFECTIVE, open(os.path.join(HERE, "lutg_psk8_pads_used.json" if PSK8 else "lutg_pads_used.json"), "w"), indent=0)

@@ -1,3 +1,30 @@
+# ESP32-DATV-SA (Stand-Alone)
+
+> **This is a fork of [SP8ESA/ESP32-DATV](https://github.com/SP8ESA/ESP32-DATV)** — a DVB-S / DVB-S2
+> video transmitter that uses the ESP32-C3's own 2.4 GHz Wi-Fi RF hardware. All credit for the original
+> modulator, firmware and host tools goes to SP8ESA. The original README follows below.
+
+The original project needs a PC: the host encodes the video and streams DVB-S/S2 symbols to the
+ESP32-C3 over USB. **ESP32-DATV-SA** aims at a transmitter that works **without a PC**: power it up
+and it is on the air.
+
+**Current status:** the firmware works as a stand-alone **DVB-S2 beacon**. At power-up it transmits a
+pre-computed loop (still test card + service name / provider, QPSK 3/4, 333 kS/s, pilots,
+2404.750 MHz) from RAM. The loop is generated on the PC once by `host/make_beacon.py` and built into
+the firmware. If a PC sends a command over USB, the beacon stops and the original PC-driven mode
+takes over (see [Stand-alone beacon](#stand-alone-beacon)).
+
+**Planned:** an optional front panel with an **LCD** and a **rotary encoder with push button** to select
+frequency, symbol rate, modulation, level and PA enable directly on the device.
+
+<p align="center"><img src="docs/standalone.svg" alt="ESP32-DATV-SA block diagram" width="820"></p>
+
+**Video:** [ESP32-DATV-SA on YouTube](https://youtu.be/6ugd4OvI7S4)
+
+[![ESP32-DATV-SA video](https://img.youtube.com/vi/6ugd4OvI7S4/hqdefault.jpg)](https://youtu.be/6ugd4OvI7S4)
+
+---
+
 <p align="center"><img src="docs/meme.jpg" alt="Is this a 2.4GHz DATV transmitter? (an ESP32-C3 SuperMini)" width="620"></p>
 
 # ESP32-DATV
@@ -68,7 +95,7 @@ The single-panel GUI selects video, TS or a V4L2 camera and controls TX, Start/S
 and profiles. Click a [QO-100 WB channel](https://wiki.batc.org.uk/QO-100_WB_Bandplan)
 to set its uplink frequency; Apply/Restart applies changes to an active transmitter.
 The Level slider uses relative dB: 0 dB is the default amplitude for the modulation.
-GUI defaults: 0 dB, W1 at 2403.750 MHz, DVB-S2 8PSK at 1 MS/s.
+GUI defaults: 0 dB, N4 at 2404.750 MHz, DVB-S2 QPSK 3/4 at 333 kS/s, normal frames, test source.
 Its minimum is set by `min_level_db` in `host/tx_gui_config.json` (default −27 dB).
 PA enable controls GPIO3: 3.3 V during TX, 0 V after Stop or USB timeout.
 It defaults to off; use Apply/Restart after changing the checkbox.
@@ -76,7 +103,17 @@ Sampling and buffer settings are automatic; I/Q calibration comes from the selec
 JSON file. Defaults: 0 ppm, DC I/Q 0, Q gain 1, Q phase 0. The earlier board-specific
 example is in `host/cal_sp8esa.json`. Ready TS must fit the channel capacity.
 Service name and provider are editable for video, camera, test and TS URL sources;
-defaults are `ESP32-C3 DATV` and `ESP32-DATV`. TS files keep their own metadata.
+GUI defaults are `TA7W-TV` and `TA7W-TRABZON` (CLI: `ESP32-C3 DATV` and `ESP32-DATV`). TS files keep their own metadata.
+
+### Stand-alone beacon
+
+After power-up the firmware transmits a built-in DVB-S2 loop without a PC: QPSK 3/4, 333 kS/s, pilots,
+2404.750 MHz, a still test card and the service `TA7W-TV` / `TA7W-TRABZON`. The loop is 4 PLFRAMEs (0.4 s)
+held in RAM; every repetition restarts the TS time base (flagged with the discontinuity indicator).
+Any byte from the host stops it; after a valid command (the GUI sends `INFO`) it stays off until the next
+reset, otherwise it resumes after 5 s. PA enable (GPIO3) stays low unless `BEACON_PA` in `main.c` is 1.
+To change it, edit and run `python3 host/make_beacon.py` (writes `firmware/main/beacon.bin` and
+`beacon_cfg.h`), then build and flash.
 
 Run from the repository root with `.venv` activated. These examples loop the included
 Sintel trailer at 2370 MHz; FFmpeg adjusts the video and audio to the channel capacity.

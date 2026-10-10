@@ -66,7 +66,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn('9/10', fec_choices('DVB-S2', '32apsk', 'short'))
         self.assertEqual(fec_choices('DVB-S2', '32apsk', 'normal')[0], '3/4')
         with self.assertRaises(ValueError):
-            Settings(fec='1/2').resolve()
+            Settings(mod='8psk', fec='1/2').resolve()
         with self.assertRaises(SystemExit):
             Settings(mod='32apsk', baud=500000).resolve()
         with self.assertRaises(ValueError):
@@ -74,7 +74,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_missing_source_rejected_before_usb(self):
         with self.assertRaises(ValueError):
-            Settings(film='/no/such/input.mp4').resolve(check_files=True)
+            Settings(source='film', film='/no/such/input.mp4').resolve(check_files=True)
         with self.assertRaises(ValueError):
             Settings(source='camera', camera='/no/such/video0').resolve(check_files=True)
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,7 +225,7 @@ class GuiTests(unittest.TestCase):
         point = self.window.bandplan.channel_rect(channel).center().toPoint()
         QTest.mouseClick(self.window.bandplan, Qt.LeftButton, pos=point)
         self.assertEqual(self.window.settings().freq, 2408.25)
-        self.assertEqual(self.window.settings().baud, 1000000)
+        self.assertEqual(self.window.settings().baud, Settings().baud)
         self.assertEqual(self.window.controller.state, 'idle')
         old = self.window.settings().freq
         point.setX(round(self.window.bandplan.x(BEACON_UPLINK)))
@@ -237,6 +237,7 @@ class GuiTests(unittest.TestCase):
         level = self.window.widgets['level_db']
         self.assertEqual(level.value(), 0)
         self.assertEqual(level.label.text(), '0.0 dB')
+        self.window.set_value('mod', '8psk')
         level.setValue(-20)
         _, args = self.window.settings().resolve()
         self.assertEqual(args.amp, 42)

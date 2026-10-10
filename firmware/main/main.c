@@ -16,6 +16,7 @@
  *   PA 0|1   arm GPIO3 for the next transmission; PA queries armed state / pin level
  *   QPSKT f_MHz baud sps [amp [seconds [ifm [target [dcI dcQ [g phi]]]]]]   see qpsk_lut.h and README.md
  *   PSK8T ...same arguments   8PSK from the generic loop (3 bit symbols, 16..64 samples per symbol at 8 MS/s)
+ * After power-up, until the host sends anything, the firmware transmits a built-in DVB-S2 beacon (see beacon_run).
  *
  * Transmit only. Licensed amateur use only: the firmware refuses anything outside 2300..2450 MHz.
  */
@@ -1017,9 +1018,78 @@ static void tx_qpsk_lut(uint32_t fkhz, uint32_t baud_req, uint32_t sps, int32_t 
 }
 
 
+/* ------------------------------------------------------------ stand-alone beacon (lutb.S, beacon.bin and beacon_cfg.h from host/make_beacon.py)
+ * After power-up the ESP transmits a fixed DVB-S2 loop (test card, service name) from RAM, with the generic 8 MS/s loop, until the host
+ * sends a byte. The beacon starts again after BEACON_IDLE_US without input, unless a valid command has arrived since power-up: once a host
+ * has taken over, only a reset brings the beacon back. */
+#include "beacon_cfg.h"
+#define BEACON_PA 0                     /* 1: GPIO3 (PA enable) high while the beacon transmits */
+#define BEACON_IDLE_US 5000000
+extern const uint8_t beacon_bin_start[] asm("_binary_beacon_bin_start");
+extern const uint8_t beacon_bin_end[] asm("_binary_beacon_bin_end");
+extern uint32_t lutb_run_p20(lutg_ctx_t *c);
+static bool host_seen;
+
+static void beacon_run(void) {
+    const size_t bytes = (size_t)(beacon_bin_end - beacon_bin_start);
+    const uint32_t S = BEACON_SPS, period = 20;
+    if (bytes < BEACON_SYMBOLS / 4u + 4u) { say("ERR beacon data\r\n"); return; }
+    uint8_t *loop = malloc(bytes);                                   /* the big block first */
+    int32_t *T = malloc(lutt_bytes(S));
+    float *hb = malloc(8 * S * sizeof(float));
+    if (!loop || !T || !hb) { free(loop); free(T); free(hb); say("ERR beacon out of memory\r\n"); return; }
+    memcpy(loop, beacon_bin_start, bytes);                          /* flash reads would stall the loop */
+    lut_build_t(T, S, 0, 0.35f, (float)BEACON_AMP, 0.0f, 0.0f, 1.0f, 0.0f, hb);
+    free(hb);
+    if (!tune(BEACON_FREQ_KHZ)) { free(loop); free(T); return; }
+    const sample_clock_t symbol_clock = sample_clock_init(CPU_HZ, BEACON_BAUD);
+    lutg_ctx_t c;
+    memset(&c, 0, sizeof(c));
+    for (uint32_t g = 0; g < 4; ++g) c.t[g] = T + g * S * 16;
+    c.ring = loop;
+    c.rlim = BEACON_SYMBOLS;                                         /* lutb.S: the loop length in symbols */
+    c.mper = c.mcnt = 2048;
+    c.lim = c.lim1 = UINT32_MAX;                                     /* no silence limit */
+    c.s64m = 64u * (S - 1);
+    c.sper = S * period;
+    c.rem = symbol_clock.period == S * period ? symbol_clock.remainder : 0;
+    c.div = symbol_clock.period == S * period ? symbol_clock.divisor : 1;
+    const uint32_t owner0 = rd(SRAM_OWNER);
+    pa_set(BEACON_PA);
+    if (BEACON_PA) esp_rom_delay_us(5000);
+    phy_txforce(1);
+    esp_rom_delay_us(3000);
+    DAC_BUF[0] = 0;
+    taskENTER_CRITICAL(&stream_mux);
+    wr(SRAM_OWNER, (owner0 & ~7u) | 2u | 8u);
+    __asm__ volatile("fence rw,rw" ::: "memory");
+    wr(DAC_CTRL, rd(DAC_CTRL) & ~(1u << 31));
+    wr(DAC_CTRL, 0x80000u | 1u);
+    wr(DAC_CTRL, 0x80000u | 1u | (1u << 31));
+    do {                                                             /* the symbol counter runs out after 3.6 hours: go on where it stopped */
+        c.nsym = UINT32_MAX;
+        c.exitc = 0;
+        c.tn = c.trx = ccount() + 20000;
+        lutb_run_p20(&c);
+    } while (c.exitc != 3);                                          /* 3: a byte from the host */
+    const uint32_t late = c.late;
+    DAC_BUF[0] = 0;
+    wr(DAC_CTRL, rd(DAC_CTRL) & ~(1u << 31));
+    wr(SRAM_OWNER, owner0);
+    taskEXIT_CRITICAL(&stream_mux);
+    phy_txforce(0);
+    pa_set(false);
+    tx_leave();
+    free(T);
+    free(loop);
+    say("BEACON END late %lu symbols %lu\r\n", (unsigned long)late, (unsigned long)(UINT32_MAX - c.nsym));
+}
+
 /* ------------------------------------------------------------ commands */
 
 static void handle(char *line) {
+    const bool seen = host_seen;
+    host_seen = true;                                                /* a valid command: the host has taken over */
     if (!strcmp(line, "INFO")) {
         say("ESP32DATV 1 PA_GPIO %u\r\n", (unsigned)PA_ENABLE_GPIO);
     } else if (!strcmp(line, "PA")) {
@@ -1050,6 +1120,7 @@ static void handle(char *line) {
         }
         tx_qpsk_lut(fk, (uint32_t)baud, (uint32_t)sps, (int32_t)amp, (uint32_t)secs, (int32_t)ifm, (int32_t)tgt, (int32_t)dc4i, (int32_t)dc4q, (int32_t)gq, (int32_t)phim, psk8, a16, (uint32_t)gam, a32, (uint32_t)gam2, pa_enable);
     } else {
+        host_seen = seen;                                            /* e.g. a modem probe: does not stop the beacon for good */
         pa_requested = false;
         pa_set(false);
         say("ERR ? (commands: INFO, HEAP, PA, QPSKT, PSK8T, A16T, A32T)\r\n");
@@ -1074,12 +1145,23 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
     tune(2412000);                               /* the PHY needs a valid channel before the first TX */
+    beacon_run();
 
     char line[128];
     size_t used = 0;
+    int64_t idle_since = esp_timer_get_time();
     for (;;) {
         uint8_t c;
-        if (!usb_serial_jtag_ll_read_rxfifo(&c, 1)) { vTaskDelay(1); continue; }
+        if (!usb_serial_jtag_ll_read_rxfifo(&c, 1)) {
+            if (!host_seen && esp_timer_get_time() - idle_since > BEACON_IDLE_US) {
+                used = 0;
+                beacon_run();
+                idle_since = esp_timer_get_time();
+            }
+            vTaskDelay(1);
+            continue;
+        }
+        idle_since = esp_timer_get_time();
         if (c == '\r') continue;
         if (c != '\n') {
             if (used < sizeof(line) - 1) line[used++] = (char)c;
