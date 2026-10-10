@@ -7,3 +7,7 @@
 #define BEACON_SPS        24u
 #define BEACON_AMP        300
 #define BEACON_SYMBOLS    133128u
+#define BEACON_FEC        "3/4"
+#define BEACON_PILOTS     1
+#define BEACON_SERVICE    "TA7W-TV"
+#define BEACON_PROVIDER   "TA7W-TRABZON"

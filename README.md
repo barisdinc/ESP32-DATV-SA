@@ -17,6 +17,49 @@ takes over (see [Stand-alone beacon](#stand-alone-beacon)).
 **Planned:** an optional front panel with an **LCD** and a **rotary encoder with push button** to select
 frequency, symbol rate, modulation, level and PA enable directly on the device.
 
+### Front panel (work in progress)
+
+The front panel is a module with an SSD1306 128x64 I2C OLED, an EC11 rotary encoder with push button
+and three buttons. The OLED already works: it shows the transmit state, PA enable, frequency,
+modulation / FEC, symbol rate and the beacon's service name and provider. The screen is drawn just
+before a transmission starts and after it ends (the transmit loops run with interrupts masked).
+Without a display the firmware runs as before. The encoder and buttons are wired but not read yet.
+
+| Panel pin | ESP32-C3 SuperMini | Status |
+|---|---|---|
+| VCC | 3V3 | **not 5V**: the module's I2C pull-ups go to VCC |
+| GND | GND | |
+| OLED SDA | GPIO0 | working (bit-banged I2C, address 0x3C or 0x3D) |
+| OLED SCL | GPIO1 | working |
+| EC11 A (CLK / TRA) | GPIO5 | planned |
+| EC11 B (DT / TRB) | GPIO6 | planned |
+| EC11 push (SW) | GPIO7 | planned |
+| Button 1 | GPIO10 | planned |
+| Button 2 | GPIO20 (RX) | planned |
+| Button 3 | GPIO21 (TX) | planned; do not hold it during reset (ROM boot log on TX) |
+| PA enable | GPIO3 | unchanged |
+
+```
+ ESP32-C3 SuperMini                       OLED / EC11 / buttons module
+ ┌──────────────┐
+ │ 3V3          ├───────────────────────── VCC
+ │ GND          ├───────────────────────── GND
+ │ GPIO0        ├───────────────────────── SDA
+ │ GPIO1        ├───────────────────────── SCL
+ │ GPIO5        ├───────────────────────── EC11 A
+ │ GPIO6        ├───────────────────────── EC11 B
+ │ GPIO7        ├───────────────────────── EC11 SW
+ │ GPIO10       ├───────────────────────── Button 1
+ │ GPIO20       ├───────────────────────── Button 2
+ │ GPIO21       ├───────────────────────── Button 3
+ │ GPIO3        ├───────────────────────── PA enable (external PA)
+ └──────────────┘
+```
+
+The strapping pins GPIO2, GPIO8 (LED) and GPIO9 (BOOT) and the USB pins GPIO18/19 stay free.
+Buttons and encoder switch to GND; the internal pull-ups are enabled. Keep the I2C wires short
+(10–15 cm), away from the antenna. Pin order differs between SuperMini clones: check the silkscreen.
+
 <p align="center"><img src="docs/standalone.svg" alt="ESP32-DATV-SA block diagram" width="820"></p>
 
 **Video:** [ESP32-DATV-SA on YouTube](https://youtu.be/6ugd4OvI7S4)

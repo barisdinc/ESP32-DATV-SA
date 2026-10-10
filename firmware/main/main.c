@@ -45,6 +45,7 @@
 #include "heap_memory_layout.h"
 #include "soc/soc.h"
 #include "sample_clock.h"
+#include "oled.h"
 
 /* RF dump bank (ADC capture / DAC playback, librftest adctrig / dactrig):
  * data at 0x3FCB0000. Handing the bank to the RF block (0x600C1020) takes
@@ -1018,6 +1019,36 @@ static void tx_qpsk_lut(uint32_t fkhz, uint32_t baud_req, uint32_t sps, int32_t 
 }
 
 
+/* ------------------------------------------------------------ front panel (oled.c)
+ * The transmit loops run with interrupts masked, so the screen is drawn just before a transmission starts and after it ends,
+ * never during it. Layout: status (inverse) and PA, frequency in large digits, then four text lines (NULL: empty). */
+static bool panel_ok;
+
+static void panel_show(const char *state, bool pa, uint32_t fkhz, const char *l4, const char *l5, const char *l6, const char *l7) {
+    if (!panel_ok) return;
+    char b[24];
+    oled_fb_t f;
+    oled_clear(&f);
+    oled_text(&f, 1, 0, 1, state);
+    oled_invert(&f, 0, 6 * (int)strlen(state) + 1, 0);
+    const char *pas = pa ? "PA ON" : "PA OFF";
+    oled_text(&f, OLED_W - 6 * (int)strlen(pas), 0, 1, pas);
+    oled_hline(&f, 10);
+    if (fkhz) {
+        snprintf(b, sizeof(b), "%4lu.%03lu", (unsigned long)(fkhz / 1000), (unsigned long)(fkhz % 1000));
+        oled_text(&f, 0, 2, 2, b);
+        oled_text(&f, OLED_W - 18, 3, 1, "MHz");
+    }
+    const char *l[4] = {l4, l5, l6, l7};
+    for (int i = 0; i < 4; ++i)
+        if (l[i]) oled_text(&f, 0, 4 + i, 1, l[i]);
+    oled_flush(&f);
+}
+
+static void panel_sr(char *b, size_t n, uint32_t baud, const char *tail) {
+    snprintf(b, n, "SR %lu kS/s%s", (unsigned long)((baud + 500) / 1000), tail);
+}
+
 /* ------------------------------------------------------------ stand-alone beacon (lutb.S, beacon.bin and beacon_cfg.h from host/make_beacon.py)
  * After power-up the ESP transmits a fixed DVB-S2 loop (test card, service name) from RAM, with the generic 8 MS/s loop, until the host
  * sends a byte. The beacon starts again after BEACON_IDLE_US without input, unless a valid command has arrived since power-up: once a host
@@ -1054,6 +1085,9 @@ static void beacon_run(void) {
     c.sper = S * period;
     c.rem = symbol_clock.period == S * period ? symbol_clock.remainder : 0;
     c.div = symbol_clock.period == S * period ? symbol_clock.divisor : 1;
+    char sr[24];
+    panel_sr(sr, sizeof(sr), BEACON_BAUD, BEACON_PILOTS ? " pilots" : "");
+    panel_show("BEACON TX", BEACON_PA, BEACON_FREQ_KHZ, "DVB-S2 QPSK " BEACON_FEC, sr, "Svc " BEACON_SERVICE, "Prv " BEACON_PROVIDER);
     const uint32_t owner0 = rd(SRAM_OWNER);
     pa_set(BEACON_PA);
     if (BEACON_PA) esp_rom_delay_us(5000);
@@ -1083,6 +1117,7 @@ static void beacon_run(void) {
     free(T);
     free(loop);
     say("BEACON END late %lu symbols %lu\r\n", (unsigned long)late, (unsigned long)(UINT32_MAX - c.nsym));
+    panel_show("STANDBY", false, 0, "PC on USB", NULL, "Svc " BEACON_SERVICE, "Prv " BEACON_PROVIDER);
 }
 
 /* ------------------------------------------------------------ commands */
@@ -1118,7 +1153,12 @@ static void handle(char *line) {
             say("ERR QPSKT|PSK8T|A16T|A32T f_MHz baud sps(4|8|16, or 16..232 when baud * sps = 8 or 6.67 MHz; PSK8T: 16..64 at 8 MHz) [amp 1..480 [seconds [if in multiples of baud, +-6 [target 0 = PRBS in the ESP, >0 = stream from USB [dcI dcQ in 1/16 code [g in 1e-4 [phase in 1e-3 deg [gamma x 100: 16APSK ring ratio 200..400, 32APSK R2 / R1 [gamma2 x 100: 32APSK R3 / R1 200..700]]]]]]]]]]\r\n");
             return;
         }
+        char mod[24], sr[24];
+        snprintf(mod, sizeof(mod), "%s from PC", a32 ? "32APSK" : a16 ? "16APSK" : psk8 ? "8PSK" : "QPSK");
+        panel_sr(sr, sizeof(sr), (uint32_t)baud, "");
+        panel_show("PC TX", pa_enable, fk, mod, sr, "Service set by PC", NULL);
         tx_qpsk_lut(fk, (uint32_t)baud, (uint32_t)sps, (int32_t)amp, (uint32_t)secs, (int32_t)ifm, (int32_t)tgt, (int32_t)dc4i, (int32_t)dc4q, (int32_t)gq, (int32_t)phim, psk8, a16, (uint32_t)gam, a32, (uint32_t)gam2, pa_enable);
+        panel_show("STANDBY", false, fk, mod, sr, "PC on USB", NULL);
     } else {
         host_seen = seen;                                            /* e.g. a modem probe: does not stop the beacon for good */
         pa_requested = false;
@@ -1129,6 +1169,7 @@ static void handle(char *line) {
 
 void app_main(void) {
     pa_init();
+    panel_ok = oled_init();
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());

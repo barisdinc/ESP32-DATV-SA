@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "lut8.S" "lutg.S" "lutg_psk8.S" "lutg_p8s8.S" "lutg_a16.S" "lutg_a16s8.S" "lutg_a32.S" "lutb.S"
+idf_component_register(SRCS "main.c" "oled.c" "lut8.S" "lutg.S" "lutg_psk8.S" "lutg_p8s8.S" "lutg_a16.S" "lutg_a16s8.S" "lutg_a32.S" "lutb.S"
                        EMBED_FILES "beacon.bin"
                        REQUIRES esp_phy esp_wifi nvs_flash esp_timer esp_driver_usb_serial_jtag esp_driver_gpio)
 

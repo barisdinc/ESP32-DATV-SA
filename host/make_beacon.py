@@ -201,6 +201,11 @@ def bbframe(enc, data, crc_prev):
     return np.packbits(bits ^ dvbs2.bb_prbs(enc.kbch)).tobytes(), crc_prev
 
 
+def c_str(s):
+    """C string literal for beacon_cfg.h (the front panel shows the service name and provider)."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--freq", type=float, default=2404.750, help="MHz")
@@ -263,6 +268,10 @@ def main():
 #define BEACON_SPS        {sps}u
 #define BEACON_AMP        {a.amp}
 #define BEACON_SYMBOLS    {nsym}u
+#define BEACON_FEC        {c_str(a.fec)}
+#define BEACON_PILOTS     {int(pilots)}
+#define BEACON_SERVICE    {c_str(a.service_name)}
+#define BEACON_PROVIDER   {c_str(a.service_provider)}
 """
     open(os.path.join(a.out, "beacon_cfg.h"), "w").write(cfg)
     print(f"{len(out)} bytes, {nsym} symbols = {nsym / a.baud * 1000:.1f} ms loop, TS {tsr / 1000:.1f} kb/s -> {os.path.normpath(a.out)}")
