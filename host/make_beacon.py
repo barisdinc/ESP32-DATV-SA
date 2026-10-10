@@ -101,18 +101,33 @@ def nal_units(es):
     return out
 
 
-def encode_card(width, height, qp, frames, name, provider, info):
+CARD_TEXT = ("ESP32 DATV-SA", "Project by BARIS DINC", "TA7W/OH2UDS")
+FONTS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+         "C:/Windows/Fonts/arialbd.ttf")
+
+
+def card_overlay(width, height, lines, path):
+    """The lower part of the card as a PNG (black box, centred text lines): drawn with Pillow, so FFmpeg needs no drawtext (freetype)."""
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, round(height * 0.62), width, height], fill=(0, 0, 0, 255))
+    font_file = next((f for f in FONTS if os.path.exists(f)), None)
+    rows = [(height // 7, (255, 255, 255), 0.645), (height // 14, (255, 255, 0), 0.80), (height // 14, (255, 255, 255), 0.885)]
+    for text, (size, colour, y) in zip(lines, rows):
+        font = ImageFont.truetype(font_file, size) if font_file else ImageFont.load_default(size)
+        w = d.textlength(text, font=font)
+        d.text(((width - w) / 2, height * y), text, font=font, fill=colour + (255,))
+    img.save(path)
+
+
+def encode_card(width, height, qp, frames, lines):
     """H.264 access units of a still test card: an IDR frame, then P frames (skips). SEI is dropped (x264 writes its options there)."""
-    font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    esc = lambda t: t.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-    text = (f"drawbox=x=0:y=ih*0.62:w=iw:h=ih*0.38:color=black:t=fill,"
-            f"drawtext=fontfile={font}:text='{esc(name)}':fontcolor=white:fontsize=h/7:x=(w-text_w)/2:y=h*0.645,"
-            f"drawtext=fontfile={font}:text='{esc(provider)}':fontcolor=yellow:fontsize=h/14:x=(w-text_w)/2:y=h*0.80,"
-            f"drawtext=fontfile={font}:text='{esc(info)}':fontcolor=white:fontsize=h/22:x=(w-text_w)/2:y=h*0.905")
     with tempfile.TemporaryDirectory() as d:
-        out = os.path.join(d, "card.h264")
-        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-                        "-i", f"smptehdbars=size={width}x{height}:rate={FPS},{text}", "-frames:v", str(frames),
+        out, png = os.path.join(d, "card.h264"), os.path.join(d, "text.png")
+        card_overlay(width, height, lines, png)
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"smptehdbars=size={width}x{height}:rate={FPS}",
+                        "-loop", "1", "-i", png, "-filter_complex", "[0][1]overlay=format=auto", "-frames:v", str(frames),
                         "-c:v", "libx264", "-preset", "veryslow", "-profile:v", "main", "-level", "3.0", "-pix_fmt", "yuv420p",
                         "-bf", "0", "-g", "250", "-qp", str(qp), "-x264-params", "aud=1:scenecut=0", "-f", "h264", out], check=True)
         es = open(out, "rb").read()
@@ -247,6 +262,7 @@ def main():
     ap.add_argument("--amp", type=int, default=13, help="DAC amplitude, 1..480 (13 = -27 dB from the usual 300)")
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--qp", type=int, default=0, help="H.264 QP of the card; 0 = the best that fits")
+    ap.add_argument("--card-text", nargs=3, default=CARD_TEXT, metavar=("LINE1", "LINE2", "LINE3"), help="the three text lines of the test card")
     ap.add_argument("--service-name", default="TA7W-TV")
     ap.add_argument("--service-provider", default="TA7W-TRABZON")
     ap.add_argument("--out", default=os.path.join(HERE, "..", "firmware", "main"))
@@ -268,9 +284,8 @@ def main():
     slots = a.frames * PER_FRAME
     slot_s = a.frames * enc.nsym / a.baud / slots
     height = (a.width * 9 // 16) // 2 * 2
-    info = f"DVB-S2 QPSK {a.fec}  SR {a.baud // 1000}  {a.freq:.3f} MHz"
     for qp in ([a.qp] if a.qp else range(22, 52)):
-        aus = encode_card(a.width, height, qp, 12, a.service_name, a.service_provider, info)
+        aus = encode_card(a.width, height, qp, 12, a.card_text)
         try:
             pkts, dts, nframes = build_ts(aus, slots, slot_s, a.service_name, a.service_provider)
             break
