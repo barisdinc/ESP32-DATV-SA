@@ -57,7 +57,7 @@ Without a display the firmware runs as before. The encoder and buttons are wired
 ```
 
 The strapping pins GPIO2, GPIO8 (LED) and GPIO9 (BOOT) and the USB pins GPIO18/19 stay free.
-Buttons and encoder switch to GND; the internal pull-ups are enabled. Keep the I2C wires short
+Buttons and encoder switch to GND; the firmware will enable the internal pull-ups. Keep the I2C wires short
 (10–15 cm), away from the antenna. Pin order differs between SuperMini clones: check the silkscreen.
 
 <p align="center"><img src="docs/standalone.svg" alt="ESP32-DATV-SA block diagram" width="820"></p>
