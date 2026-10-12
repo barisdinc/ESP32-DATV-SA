@@ -193,7 +193,7 @@ reset, otherwise it resumes after 5 s. PA enable (GPIO3) stays low unless `BEACO
 The beacon sits at the bottom of the 13 cm band, about 100 MHz below Wi-Fi channel 1, at amplitude 13
 (about −27 dB from the usual 300, the GUI's minimum level), so it does not disturb nearby Wi-Fi.
 Use `--freq` and `--amp` of `make_beacon.py` for another frequency or level.
-The test card reads `ESP32 DATV-SA` / `Project by BARIS DINC` / `TA7W/OH2UDS` (`--card-text` for other lines);
+The test card reads `ESP32 DATV-SA` / `Project by yATOLYE` / `Turkish Hamradio Community` (`--card-text` for other lines);
 its text is drawn with Pillow, so FFmpeg needs no drawtext.
 To change it, edit and run `python3 host/make_beacon.py` (writes `firmware/main/beacon.bin` and
 `beacon_cfg.h`), then build and flash.

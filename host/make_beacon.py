@@ -101,7 +101,7 @@ def nal_units(es):
     return out
 
 
-CARD_TEXT = ("ESP32 DATV-SA", "Project by BARIS DINC", "TA7W/OH2UDS")
+CARD_TEXT = ("ESP32 DATV-SA", "Project by yATOLYE", "Turkish Hamradio Community")
 FONTS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
          "C:/Windows/Fonts/arialbd.ttf")
 
