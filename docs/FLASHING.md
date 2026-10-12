@@ -15,7 +15,7 @@ After flashing, the board transmits a DVB-S2 test card on its own as soon as it 
 | Level | low (−27 dB below the usual level) |
 | Standard | DVB-S2, QPSK, FEC 3/4, pilots on, roll-off 0.35 |
 | Symbol rate | 333 kS/s |
-| Service | `YATOLYE-TV` / `Technology Community` |
+| Service | `yATOLYE-TV` / `Technology Community` |
 
 ## What you need
 
@@ -81,7 +81,7 @@ kurmanız gerekmez** — ne ESP-IDF, ne Python, ne sürücü. Windows, macOS ve 
 tarayıcısı yeterlidir.
 
 Yüklemeden sonra kart, elektrik verildiği anda kendi kendine bir DVB-S2 test yayını yapar:
-**2300.500 MHz, DVB-S2 QPSK 3/4, 333 kS/s, pilotlar açık, düşük seviye (−27 dB)**, servis adı `YATOLYE-TV` / `Technology Community`.
+**2300.500 MHz, DVB-S2 QPSK 3/4, 333 kS/s, pilotlar açık, düşük seviye (−27 dB)**, servis adı `yATOLYE-TV` / `Technology Community`.
 
 ### Gerekenler
 

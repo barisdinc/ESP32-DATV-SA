@@ -83,7 +83,7 @@ class Settings:
     camera_format: str = "auto"
     audio_source: str = "none"
     audio_device: str = "default"
-    service_name: str = "YATOLYE-TV"
+    service_name: str = "yATOLYE-TV"
     service_provider: str = "Technology Community"
     width: int = 640
     video_k: int = 0
