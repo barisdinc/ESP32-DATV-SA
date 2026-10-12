@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Builds the stand-alone beacon of the firmware: a short DVB-S2 QPSK symbol loop that the ESP plays from RAM after power-up.
 
-The ESP cannot encode video or LDPC while its single core drives the DAC, so the whole transmission is computed here: a still
-test card (H.264), PAT / PMT / SDT and PCR in a transport stream of exactly N x 32 packets, N DVB-S2 PLFRAMEs, packed as the
+The ESP cannot encode video or LDPC while its single core drives the DAC, so the whole transmission is computed here: a
+test card (H.264, still but for three activity squares that step on every frame), PAT / PMT / SDT and PCR in a
+transport stream of exactly N x 32 packets, N DVB-S2 PLFRAMEs, packed as the
 firmware's QPSK ring expects (4 symbols per byte, first symbol in the low bits). Every BBFRAME carries exactly 32 whole TS packets
 (DFL = 32 x 1504 bits, the rest of the frame is padding), so the loop repeats seamlessly at the DVB-S2 level. At the TS level
 every loop restarts the time base: the first PCR and the first PSI packets carry the discontinuity indicator, and the video PID's
@@ -101,13 +102,16 @@ def nal_units(es):
     return out
 
 
+ACTIVITY = 3                                      # activity squares on the card, one step per frame; the loop holds one frame more
 CARD_TEXT = ("ESP32 DATV-SA", "Project by yATOLYE", "Turkish Hamradio Community")
 FONTS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
          "C:/Windows/Fonts/arialbd.ttf")
 
 
-def card_overlay(width, height, lines, path):
-    """The lower part of the card as a PNG (black box, centred text lines): drawn with Pillow, so FFmpeg needs no drawtext (freetype)."""
+def card_overlay(width, height, lines, path, phase):
+    """The lower part of the card as a PNG (black box, centred text lines): drawn with Pillow, so FFmpeg needs no drawtext (freetype).
+    Right of the second line, ACTIVITY squares: square `phase` is lit. It moves on every frame, so the receiver sees the loop running
+    (a few macroblocks change: the P frames stay small)."""
     from PIL import Image, ImageDraw, ImageFont
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -118,16 +122,23 @@ def card_overlay(width, height, lines, path):
         font = ImageFont.truetype(font_file, size) if font_file else ImageFont.load_default(size)
         w = d.textlength(text, font=font)
         d.text(((width - w) / 2, height * y), text, font=font, fill=colour + (255,))
+    sq = width // 32
+    x0, y0 = width - sq // 2 - (ACTIVITY - 1) * sq * 3 // 2 - sq, round(height * 0.81)
+    for k in range(ACTIVITY):
+        x = x0 + k * sq * 3 // 2
+        d.rectangle([x, y0, x + sq - 1, y0 + sq - 1], fill=(255, 0, 0, 255) if k == phase else (64, 64, 64, 255))
     img.save(path)
 
 
 def encode_card(width, height, qp, frames, lines):
-    """H.264 access units of a still test card: an IDR frame, then P frames (skips). SEI is dropped (x264 writes its options there)."""
+    """H.264 access units of the test card: an IDR frame, then P frames (skips, but for the activity squares). SEI is dropped (x264 writes its options there)."""
     with tempfile.TemporaryDirectory() as d:
-        out, png = os.path.join(d, "card.h264"), os.path.join(d, "text.png")
-        card_overlay(width, height, lines, png)
+        out = os.path.join(d, "card.h264")
+        for i in range(frames):
+            card_overlay(width, height, lines, os.path.join(d, f"text{i:03d}.png"), min(i, ACTIVITY - 1))
         subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"smptehdbars=size={width}x{height}:rate={FPS}",
-                        "-loop", "1", "-i", png, "-filter_complex", "[0][1]overlay=format=auto", "-frames:v", str(frames),
+                        "-framerate", str(FPS), "-i", os.path.join(d, "text%03d.png"), "-filter_complex", "[0][1]overlay=format=auto",
+                        "-frames:v", str(frames),
                         "-c:v", "libx264", "-preset", "veryslow", "-profile:v", "main", "-level", "3.0", "-pix_fmt", "yuv420p",
                         "-bf", "0", "-g", "250", "-qp", str(qp), "-x264-params", "aud=1:scenecut=0", "-f", "h264", out], check=True)
         es = open(out, "rb").read()
@@ -288,7 +299,10 @@ def main():
         aus = encode_card(a.width, height, qp, 12, a.card_text)
         try:
             pkts, dts, nframes = build_ts(aus, slots, slot_s, a.service_name, a.service_provider)
-            break
+            # Every activity step plus a repeat of the last one: receivers may drop the loop's last frame at the time base restart.
+            if nframes > ACTIVITY or a.qp:
+                break
+            print(f"qp {qp}: {nframes} frames per loop, {ACTIVITY + 1} wanted")
         except SystemExit as e:
             if a.qp:
                 raise

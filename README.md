@@ -194,7 +194,9 @@ The beacon sits at the bottom of the 13 cm band, about 100 MHz below Wi-Fi chann
 (about −27 dB from the usual 300, the GUI's minimum level), so it does not disturb nearby Wi-Fi.
 Use `--freq` and `--amp` of `make_beacon.py` for another frequency or level.
 The test card reads `ESP32 DATV-SA` / `Project by yATOLYE` / `Turkish Hamradio Community` (`--card-text` for other lines);
-its text is drawn with Pillow, so FFmpeg needs no drawtext.
+its text is drawn with Pillow, so FFmpeg needs no drawtext. Three squares right of the second line step on every frame
+(the red one moves left to right, 2.5 times a second), so a receiver sees that the beacon is live; they cost under 1 KB per loop.
+The loop holds one frame more that repeats the last step, as receivers may drop the last frame before the time base restarts.
 To change it, edit and run `python3 host/make_beacon.py` (writes `firmware/main/beacon.bin` and
 `beacon_cfg.h`), then build and flash.
 
