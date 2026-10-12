@@ -11,6 +11,7 @@
 
 #define FMIN_KHZ    2300000u                                     /* the firmware's band (TX_FMIN_KHZ, TX_FMAX_KHZ in main.c) */
 #define FMAX_KHZ    2450000u
+#define NAME_X      8                                            /* service name / provider: 20 characters up to the right edge */
 #define LEVEL_MIN   (-40)                                        /* dB relative to amplitude 300 */
 #define LEVEL_MAX   4                                            /* amplitude 480, the firmware's maximum */
 #define IDLE_US     2000000                                      /* the beacon starts again this long after the last input */
@@ -240,13 +241,13 @@ void panel_draw(void) {
     snprintf(b, sizeof(b), "SR %lu kS/s", (unsigned long)((panel_sr_baud[c->sr] + 500) / 1000));
     oled_text(&f, 0, 5, 1, b);
     oled_text(&f, 72, 5, 1, pls);
-    oled_text(&f, 0, 6, 1, "Svc");
-    oled_text(&f, 24, 6, 1, c->service);
-    oled_text(&f, 0, 7, 1, "Prv");
-    oled_text(&f, 24, 7, 1, c->provider);
+    oled_text(&f, 0, 6, 1, "S");
+    oled_text(&f, NAME_X, 6, 1, c->service);
+    oled_text(&f, 0, 7, 1, "P");
+    oled_text(&f, NAME_X, 7, 1, c->provider);
     const struct { int x0, x1, page; } r[F_N] = {
         {0, 6 * (int)strlen(txs), 0}, {pax, OLED_W, 0}, {0, 96, 2}, {96, OLED_W, 4}, {0, 66, 5}, {72, 72 + 6 * (int)strlen(pls), 5},
-        {24, 24 + 6 * (int)strlen(c->service), 6}, {24, 24 + 6 * (int)strlen(c->provider), 7},
+        {NAME_X, NAME_X + 6 * (int)strlen(c->service), 6}, {NAME_X, NAME_X + 6 * (int)strlen(c->provider), 7},
     };
     const int s = ui.sel, y = r[s].page == 2 ? 31 : 8 * r[s].page + 7;
     if (!ui.edit) {
@@ -256,7 +257,7 @@ void panel_draw(void) {
         oled_invert(&f, 12 * FCHAR[ui.cur], 12 * FCHAR[ui.cur] + 12, 3);
         oled_hseg(&f, r[s].x0, r[s].x1, y);
     } else if (s == F_SVC || s == F_PRV) {
-        oled_invert(&f, 24 + 6 * ui.cur, 30 + 6 * ui.cur, r[s].page);
+        oled_invert(&f, NAME_X + 6 * ui.cur, NAME_X + 6 + 6 * ui.cur, r[s].page);
         oled_hseg(&f, r[s].x0, r[s].x1, y);
     } else {
         oled_invert(&f, r[s].x0, r[s].x1, r[s].page);

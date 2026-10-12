@@ -14,6 +14,12 @@ pre-computed loop (still test card + service name / provider, QPSK 3/4, 333 kS/s
 the firmware. If a PC sends a command over USB, the beacon stops and the original PC-driven mode
 takes over (see [Stand-alone beacon](#stand-alone-beacon)).
 
+> **Just want to flash your ESP32-C3?** If you don't want to deal with any tools and only want to put
+> the firmware on your ESP32-C3, follow **[docs/FLASHING.md](docs/FLASHING.md)**. It works from a web
+> browser on Windows, macOS and Linux, with nothing to install.
+> *Hiçbir şeyle uğraşmadan sadece ESP32-C3'ünüze firmware yüklemek istiyorsanız
+> [bu rehberi](docs/FLASHING.md#türkçe) takip edin.*
+
 An optional [front panel](#front-panel) (OLED, rotary encoder, three buttons) sets frequency, level,
 symbol rate, pilots, PA enable, service name and provider directly on the device.
 
@@ -27,8 +33,8 @@ push button and three buttons. Every field on the screen can be changed on the d
  2300.500           MHz     frequency, digit by digit (10 MHz ... 1 kHz), kept inside 2300..2450 MHz
  DVB-S2 QPSK 3/4  -27dB     level, -40 ... +4 dB relative to amplitude 300 (modulation and FEC are fixed)
  SR 333 kS/s     pilots     symbol rate 125 / 250 / 333 / 400 / 500 kS/s, pilots / noPilots
- Svc TA7W-TV                service name (up to 17 characters)
- Prv TA7W-TRABZON           service provider
+ S YATOLYE-TV               service name (up to 20 characters)
+ P Technology Community     service provider (up to 20 characters)
 ```
 
 | Control | Browsing (field underlined) | Editing (field in inverse video) |
@@ -175,12 +181,12 @@ Sampling and buffer settings are automatic; I/Q calibration comes from the selec
 JSON file. Defaults: 0 ppm, DC I/Q 0, Q gain 1, Q phase 0. The earlier board-specific
 example is in `host/cal_sp8esa.json`. Ready TS must fit the channel capacity.
 Service name and provider are editable for video, camera, test and TS URL sources;
-GUI defaults are `TA7W-TV` and `TA7W-TRABZON` (CLI: `ESP32-C3 DATV` and `ESP32-DATV`). TS files keep their own metadata.
+GUI defaults are `YATOLYE-TV` and `Technology Community` (CLI: `ESP32-C3 DATV` and `ESP32-DATV`). TS files keep their own metadata.
 
 ### Stand-alone beacon
 
 After power-up the firmware transmits a built-in DVB-S2 loop without a PC: QPSK 3/4, 333 kS/s, pilots,
-2300.500 MHz, a still test card and the service `TA7W-TV` / `TA7W-TRABZON`. The loop is 4 PLFRAMEs (0.4 s)
+2300.500 MHz, a still test card and the service `YATOLYE-TV` / `Technology Community`. The loop is 4 PLFRAMEs (0.4 s)
 held in RAM; every repetition restarts the TS time base (flagged with the discontinuity indicator).
 Any byte from the host stops it; after a valid command (the GUI sends `INFO`) it stays off until the next
 reset, otherwise it resumes after 5 s. PA enable (GPIO3) stays low unless `BEACON_PA` in `main.c` is 1.

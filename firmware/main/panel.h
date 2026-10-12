@@ -22,7 +22,7 @@
 #define PANEL_K2       20                                        /* previous / cursor left / cancel */
 #define PANEL_K3       21                                        /* edit / confirm */
 #define PANEL_PINS     ((1u << PANEL_ENC_A) | (1u << PANEL_ENC_B) | (1u << PANEL_ENC_SW) | (1u << PANEL_K1) | (1u << PANEL_K2) | (1u << PANEL_K3))
-#define PANEL_NAME_MAX 17                                        /* what fits behind "Svc " on the screen */
+#define PANEL_NAME_MAX 20                                        /* what fits behind the "S" / "P" label on the screen */
 _Static_assert(PANEL_NAME_MAX <= BENC_NAME_MAX, "name length");
 
 typedef struct {
