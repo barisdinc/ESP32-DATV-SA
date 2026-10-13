@@ -12,6 +12,7 @@ continuity counter runs through the loop boundary without a jump.
 usage (from the repository root):  python3 host/make_beacon.py   ->  firmware/main/beacon.bin, firmware/main/beacon_cfg.h
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -278,6 +279,12 @@ def main():
     ap.add_argument("--service-provider", default="TEST PATTERN")
     ap.add_argument("--out", default=os.path.join(HERE, "..", "firmware", "main"))
     ap.add_argument("--ts", help="also write the TS loop (repeated 25 times) here, for checking with ffprobe / ffplay")
+    ap.add_argument("--cal", help="DC / I/Q trim file in the format of tx_dvbs.py --cal (cal.json: dc [I, Q] codes, iq_gain, "
+                                  "iq_phase_deg); --dc-i/--dc-q/--iq-gain/--iq-phase override single values")
+    ap.add_argument("--dc-i", type=float, help="I DC correction [DAC codes] against the carrier leakage (default 0)")
+    ap.add_argument("--dc-q", type=float, help="Q DC correction [DAC codes] (default 0)")
+    ap.add_argument("--iq-gain", type=float, help="Q gain correction, 0.7..1.3 (default 1)")
+    ap.add_argument("--iq-phase", type=float, help="Q phase correction [degrees], -40..40 (default 0)")
     ap.add_argument("--fec-header-only", action="store_true", help="only write beacon_fec.h (no ffmpeg needed)")
     a = ap.parse_args()
     if a.fec_header_only:
@@ -286,6 +293,13 @@ def main():
     if a.frames < 2 or a.frames % 2:
         raise SystemExit("--frames must be even (a PLFRAME is not a whole number of bytes)")
     pilots = not a.no_pilots
+    cal = json.load(open(a.cal)) if a.cal else {}
+    dc_i = a.dc_i if a.dc_i is not None else float(cal.get("dc", [0.0, 0.0])[0])
+    dc_q = a.dc_q if a.dc_q is not None else float(cal.get("dc", [0.0, 0.0])[1])
+    iq_gain = a.iq_gain if a.iq_gain is not None else float(cal.get("iq_gain", 1.0))
+    iq_phase = a.iq_phase if a.iq_phase is not None else float(cal.get("iq_phase_deg", 0.0))
+    if not (-512 <= dc_i <= 512 and -512 <= dc_q <= 512 and 0.7 <= iq_gain <= 1.3 and -40 <= iq_phase <= 40):
+        raise SystemExit("calibration out of range: DC -512..512 codes, Q gain 0.7..1.3, Q phase -40..40 degrees")
     enc = dvbs2.Encoder(a.fec, "normal", pilots, mod="qpsk")
     if enc.dfl < PER_FRAME * 1504:
         raise SystemExit(f"FEC {a.fec} holds fewer than {PER_FRAME} packets per frame")
@@ -338,6 +352,10 @@ def main():
 #define BEACON_PILOTS     {int(pilots)}
 #define BEACON_SERVICE    {c_str(a.service_name)}
 #define BEACON_PROVIDER   {c_str(a.service_provider)}
+#define BEACON_DC_I       {dc_i:.3f}f   /* DC correction [DAC codes]: nulls the carrier leakage; the BDC command changes it at run time */
+#define BEACON_DC_Q       {dc_q:.3f}f
+#define BEACON_IQ_GAIN    {iq_gain:.5f}f
+#define BEACON_IQ_PHASE   {iq_phase:.3f}f   /* degrees */
 """
     open(os.path.join(a.out, "beacon_cfg.h"), "w").write(cfg)
     write_fec_header(a.fec, a.out)
