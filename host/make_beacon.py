@@ -289,9 +289,11 @@ def main():
     enc = dvbs2.Encoder(a.fec, "normal", pilots, mod="qpsk")
     if enc.dfl < PER_FRAME * 1504:
         raise SystemExit(f"FEC {a.fec} holds fewer than {PER_FRAME} packets per frame")
-    sps, period = 24, 20
-    if 160_000_000 // a.baud != sps * period:
-        raise SystemExit("the beacon loop runs at 24 samples per symbol and 8 MS/s: --baud must be about 333000")
+    period = 20                                   # one DAC word every 20 CPU cycles: 8 MS/s
+    sps = 160_000_000 // a.baud // period         # the firmware's S; the symbol clock adds the fraction of a cycle
+    if 160_000_000 // a.baud != sps * period or not 16 <= sps <= 232:
+        raise SystemExit("the beacon loop runs at 8 MS/s with 16..232 whole samples per symbol: --baud must be one of the "
+                         "firmware's panel_sr_baud (40000, 50000, 66666, 100000, 125000, 250000, 333000, 400000, 500000)")
     slots = a.frames * PER_FRAME
     slot_s = a.frames * enc.nsym / a.baud / slots
     height = (a.width * 9 // 16) // 2 * 2

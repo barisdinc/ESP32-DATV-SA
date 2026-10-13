@@ -40,6 +40,7 @@ typedef struct {
 
 extern panel_cfg_t panel_cfg;                                    /* the confirmed settings */
 extern const uint32_t panel_sr_baud[];
+extern const uint8_t panel_nsr;                                 /* entries of panel_sr_baud */
 
 enum { PANEL_NONE, PANEL_APPLY, PANEL_LOCAL };
 

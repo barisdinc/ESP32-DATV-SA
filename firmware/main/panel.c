@@ -21,8 +21,10 @@
 #define ENC_STEPS   4                                            /* quadrature steps per detent: 4 (most EC11) or 2 */
 #define ENC_DIR     1                                            /* -1 if the encoder turns the wrong way */
 
-const uint32_t panel_sr_baud[] = {125000, 250000, 333000, 400000, 500000};    /* 8 MS/s: 64, 32, 24, 20, 16 samples per symbol */
+/* 8 MS/s: 200, 160, 120, 80, 64, 32, 24, 20, 16 samples per symbol (160 MHz / baud must round down to 20 x S) */
+const uint32_t panel_sr_baud[] = {40000, 50000, 66666, 100000, 125000, 250000, 333000, 400000, 500000};
 #define NSR ((int)(sizeof(panel_sr_baud) / sizeof(panel_sr_baud[0])))
+const uint8_t panel_nsr = NSR;
 
 static const char CHARSET[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_./+()";   /* space first: deletes */
 static const uint32_t FSTEP[] = {10000, 1000, 100, 10, 1};       /* kHz per frequency cursor position */
