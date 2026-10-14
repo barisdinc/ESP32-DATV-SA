@@ -101,6 +101,19 @@ Buttons and encoder switch to GND; the internal pull-ups are enabled. If the enc
 needs two detents per step, change `ENC_DIR` / `ENC_STEPS` in `panel.c`. Keep the I2C wires short
 (10–15 cm), away from the antenna. Pin order differs between SuperMini clones: check the silkscreen.
 
+**Seeed XIAO ESP32-C3:** it does not bring out GPIO0/1, so the OLED moves to SDA GPIO4 (D2) and SCL GPIO2 (D0);
+select it in `idf.py menuconfig` → ESP32-DATV-SA → Board (or `CONFIG_DATV_BOARD_XIAO_C3=y` in `sdkconfig`).
+Everything else keeps its GPIO: EC11 A / B / SW on D3 / D4 / D5, K1 on D10, K2 on D7, K3 on D6, PA enable on D1.
+GPIO2 is a strapping pin; the I2C pull-ups keep it high at reset, as it should be.
+
+| Panel | XIAO pin | GPIO |
+|---|---|---|
+| OLED SDA / SCL | D2 / D0 | 4 / 2 |
+| EC11 A / B / SW | D3 / D4 / D5 | 5 / 6 / 7 |
+| K1 / K2 / K3 | D10 / D7 / D6 | 10 / 20 / 21 |
+| PA enable | D1 | 3 |
+| VCC / GND | 3V3 / GND | – |
+
 <p align="center"><img src="docs/standalone.svg" alt="ESP32-DATV-SA block diagram" width="820"></p>
 
 **Video:** [ESP32-DATV-SA on YouTube](https://youtu.be/6ugd4OvI7S4)

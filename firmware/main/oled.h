@@ -5,9 +5,15 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "sdkconfig.h"
 
+#if CONFIG_DATV_BOARD_XIAO_C3                                    /* menuconfig: ESP32-DATV-SA -> Board */
+#define OLED_SDA_GPIO 4                                          /* D2 */
+#define OLED_SCL_GPIO 2                                          /* D0, strapping pin: the bus pull-ups keep it high at reset */
+#else                                                            /* ESP32-C3 SuperMini */
 #define OLED_SDA_GPIO 0
 #define OLED_SCL_GPIO 1
+#endif
 #define OLED_W 128
 #define OLED_H 64
 #define OLED_COL_OFFSET 2                                        /* SH1106 (most 1.3" modules): 132-column RAM, picture from column 2; real SSD1306: 0 */
