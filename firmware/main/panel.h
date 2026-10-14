@@ -1,6 +1,7 @@
 /* Front panel: SSD1306 / SH1106 OLED (oled.c), EC11 rotary encoder with push button and three buttons.
  *
- * Every field on the screen can be changed: beacon on / off, PA, frequency, level, symbol rate, pilots, service name and provider.
+ * Every field on the screen can be changed: beacon on / off, PA, frequency, source (test card or the stand-alone video in the flash),
+ * level, symbol rate, pilots, service name and provider (symbol rate, pilots and names: the test card's; the video brings its own).
  *   browse   encoder or K1 / K2: next / previous field (underlined); K3 or encoder push: edit it
  *   edit     encoder: change the value (inverse video); K1 / K2: cursor right / left (frequency digit, character);
  *            K3 or encoder push: confirm - the beacon restarts with the new value at once and the settings are saved (NVS);
@@ -34,7 +35,8 @@ typedef struct {
     uint32_t fkhz;
     char service[PANEL_NAME_MAX + 1];
     char provider[PANEL_NAME_MAX + 1];
-} panel_cfg_t;
+    uint8_t video;                                               /* source: 1 the video in the flash (when there is one), 0 the test card */
+} panel_cfg_t;                                                   /* new fields go last: a shorter saved blob still loads (see load) */
 
 extern panel_cfg_t panel_cfg;                                    /* the confirmed settings */
 extern const uint32_t panel_sr_baud[];
@@ -47,7 +49,7 @@ int panel_poll(bool pc);                                         /* about every 
 bool panel_busy(void);                                           /* editing, or input less than 2 s ago: keep the beacon off */
 void panel_draw(void);                                           /* the settings screen */
 void panel_error(const char *msg);                               /* a line on the settings screen until the next confirm */
-void panel_video(const char *line);                              /* the stand-alone video plays: replaces the mode line (NULL: test card) */
+void panel_video(const char *line);                              /* the flash holds a video: its mode line (at start-up, NULL: none) */
 void panel_show(const char *state, bool pa, uint32_t fkhz, const char *l4, const char *l5, const char *l6, const char *l7);  /* host mode */
 void panel_wake(void);                                           /* the beacon stopped for panel input: take the latched buttons */
 

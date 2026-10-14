@@ -1153,7 +1153,7 @@ static int beacon_fail(const char *msg, void *a, void *b, void *c) {
 
 static int beacon_run(void) {
     const panel_cfg_t *p = &panel_cfg;
-    const video_hdr_t *v = video_find();
+    const video_hdr_t *v = p->video ? video_find() : NULL;          /* the panel's source; the test card when there is no video */
     const uint32_t baud = v ? v->baud : panel_sr_baud[p->sr], period = 20, S = CPU_HZ / baud / period;
     uint8_t *loop;
     uint32_t nsym, chunk;
@@ -1318,9 +1318,11 @@ void app_main(void) {
     const panel_cfg_t defaults = {
         .tx = 1, .pa = BEACON_PA, .pilots = BEACON_PILOTS, .sr = 2, .fkhz = BEACON_FREQ_KHZ,
         .level_db = (int8_t)lroundf(20.0f * log10f(BEACON_AMP / 300.0f)), .service = BEACON_SERVICE, .provider = BEACON_PROVIDER,
+        .video = 1,
     };
     _Static_assert(BEACON_BAUD == 333000u, "panel_sr_baud[2] is the built-in symbol rate");
     panel_init(&defaults);                       /* settings saved by the front panel replace the defaults */
+    video_find();                                /* the panel shows whether the flash holds a video */
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));

@@ -1,6 +1,7 @@
 /* Front panel: settings screen, encoder, buttons, saved settings (see panel.h). */
 #include "panel.h"
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include "beacon_cfg.h"
@@ -27,7 +28,7 @@ static const char CHARSET[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv
 static const uint32_t FSTEP[] = {10000, 1000, 100, 10, 1};       /* kHz per frequency cursor position */
 static const uint8_t FCHAR[] = {2, 3, 5, 6, 7};                  /* ... and the character it underlines in "2300.500" */
 
-enum { F_TX, F_PA, F_FREQ, F_LEVEL, F_SR, F_PILOTS, F_SVC, F_PRV, F_N };
+enum { F_TX, F_PA, F_FREQ, F_SRC, F_LEVEL, F_SR, F_PILOTS, F_SVC, F_PRV, F_N };
 enum { B_K1, B_K2, B_K3, B_SW, B_N };
 enum { E_NONE, E_NEXT, E_PREV, E_CANCEL, E_OK };
 static const uint8_t BTN_PIN[B_N] = {PANEL_K1, PANEL_K2, PANEL_K3, PANEL_ENC_SW};
@@ -42,7 +43,7 @@ static struct {
     int16_t steps;                                               /* detents not handled yet */
     int64_t last;                                                /* last input; 0: none pending */
     const char *msg;
-    const char *video;                                           /* panel_video: the mode line while the video plays */
+    const char *video;                                           /* panel_video: the video's mode line, NULL: no video in the flash */
     panel_cfg_t ed;                                              /* the value being edited */
     struct { bool raw, down, used; int64_t traw, tdown; } b[B_N];
 } ui;
@@ -111,7 +112,7 @@ int32_t panel_amp(void) {
 }
 
 static bool valid(const panel_cfg_t *c) {
-    return c->tx <= 1 && c->pa <= 1 && c->pilots <= 1 && c->sr < NSR && c->level_db >= LEVEL_MIN && c->level_db <= LEVEL_MAX &&
+    return c->tx <= 1 && c->pa <= 1 && c->pilots <= 1 && c->video <= 1 && c->sr < NSR && c->level_db >= LEVEL_MIN && c->level_db <= LEVEL_MAX &&
            c->fkhz == clamp_f(c->fkhz, c->sr) && memchr(c->service, 0, sizeof(c->service)) && memchr(c->provider, 0, sizeof(c->provider)) &&
            c->service[0] && c->provider[0];
 }
@@ -129,7 +130,10 @@ static void load(void) {
     panel_cfg_t c;
     size_t n = sizeof(c);
     if (nvs_open("panel", NVS_READONLY, &h) != ESP_OK) return;
-    if (nvs_get_blob(h, "cfg", &c, &n) == ESP_OK && n == sizeof(c) && valid(&c)) panel_cfg = c;
+    if (nvs_get_blob(h, "cfg", &c, &n) == ESP_OK && n <= sizeof(c) && n >= offsetof(panel_cfg_t, video)) {
+        memcpy((uint8_t *)&c + n, (const uint8_t *)&panel_cfg + n, sizeof(c) - n);   /* fields an older firmware did not save: defaults */
+        if (valid(&c)) panel_cfg = c;
+    }
     nvs_close(h);
 }
 
@@ -145,6 +149,7 @@ static void edit_value(int d) {
     case F_TX: e->tx ^= d & 1; break;
     case F_PA: e->pa ^= d & 1; break;
     case F_PILOTS: e->pilots ^= d & 1; break;
+    case F_SRC: e->video ^= d & 1; break;
     case F_FREQ: {
         const int64_t f = (int64_t)e->fkhz + (int64_t)d * FSTEP[ui.cur];
         e->fkhz = clamp_f(f < 0 ? 0 : (uint32_t)f, e->sr);
@@ -236,7 +241,8 @@ void panel_draw(void) {
     snprintf(b, sizeof(b), "%4lu.%03lu", (unsigned long)(c->fkhz / 1000), (unsigned long)(c->fkhz % 1000));
     oled_text(&f, 0, 2, 2, b);
     oled_text(&f, OLED_W - 18, 3, 1, "MHz");
-    oled_text(&f, 0, 4, 1, ui.msg ? ui.msg : ui.video ? ui.video : "DVB-S2 QPSK " BEACON_FEC);
+    const char *src = c->video ? (ui.video ? ui.video : "VIDEO none") : "TEST CARD " BEACON_FEC;
+    oled_text(&f, 0, 4, 1, ui.msg ? ui.msg : src);
     snprintf(b, sizeof(b), "%+ddB", c->level_db);
     oled_text(&f, 96, 4, 1, b);
     snprintf(b, sizeof(b), "SR %lu kS/s", (unsigned long)((panel_sr_baud[c->sr] + 500) / 1000));
@@ -247,7 +253,7 @@ void panel_draw(void) {
     oled_text(&f, 0, 7, 1, "P");
     oled_text(&f, NAME_X, 7, 1, c->provider);
     const struct { int x0, x1, page; } r[F_N] = {
-        {0, 6 * (int)strlen(txs), 0}, {pax, OLED_W, 0}, {0, 96, 2}, {96, OLED_W, 4}, {0, 66, 5}, {72, 72 + 6 * (int)strlen(pls), 5},
+        {0, 6 * (int)strlen(txs), 0}, {pax, OLED_W, 0}, {0, 96, 2}, {0, 6 * (int)strlen(src), 4}, {96, OLED_W, 4}, {0, 66, 5}, {72, 72 + 6 * (int)strlen(pls), 5},
         {NAME_X, NAME_X + 6 * (int)strlen(c->service), 6}, {NAME_X, NAME_X + 6 * (int)strlen(c->provider), 7},
     };
     const int s = ui.sel, y = r[s].page == 2 ? 31 : 8 * r[s].page + 7;
