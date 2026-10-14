@@ -42,6 +42,7 @@ static struct {
     int16_t steps;                                               /* detents not handled yet */
     int64_t last;                                                /* last input; 0: none pending */
     const char *msg;
+    const char *video;                                           /* panel_video: the mode line while the video plays */
     panel_cfg_t ed;                                              /* the value being edited */
     struct { bool raw, down, used; int64_t traw, tdown; } b[B_N];
 } ui;
@@ -235,7 +236,7 @@ void panel_draw(void) {
     snprintf(b, sizeof(b), "%4lu.%03lu", (unsigned long)(c->fkhz / 1000), (unsigned long)(c->fkhz % 1000));
     oled_text(&f, 0, 2, 2, b);
     oled_text(&f, OLED_W - 18, 3, 1, "MHz");
-    oled_text(&f, 0, 4, 1, ui.msg ? ui.msg : "DVB-S2 QPSK " BEACON_FEC);
+    oled_text(&f, 0, 4, 1, ui.msg ? ui.msg : ui.video ? ui.video : "DVB-S2 QPSK " BEACON_FEC);
     snprintf(b, sizeof(b), "%+ddB", c->level_db);
     oled_text(&f, 96, 4, 1, b);
     snprintf(b, sizeof(b), "SR %lu kS/s", (unsigned long)((panel_sr_baud[c->sr] + 500) / 1000));
@@ -289,6 +290,11 @@ void panel_show(const char *state, bool pa, uint32_t fkhz, const char *l4, const
 
 void panel_error(const char *msg) {
     ui.msg = msg;
+    panel_draw();
+}
+
+void panel_video(const char *line) {
+    ui.video = line;
     panel_draw();
 }
 

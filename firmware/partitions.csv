@@ -1,0 +1,6 @@
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   24K
+phy_init, data, phy,     0xf000,   4K
+factory,  app,  factory, 0x10000,  1M
+# host/make_video.py writes the stand-alone video here (esptool write-flash 0x110000 video.bin)
+video,    data, 0x40,    0x110000, 0x2F0000

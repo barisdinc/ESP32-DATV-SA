@@ -47,6 +47,7 @@ int panel_poll(bool pc);                                         /* about every 
 bool panel_busy(void);                                           /* editing, or input less than 2 s ago: keep the beacon off */
 void panel_draw(void);                                           /* the settings screen */
 void panel_error(const char *msg);                               /* a line on the settings screen until the next confirm */
+void panel_video(const char *line);                              /* the stand-alone video plays: replaces the mode line (NULL: test card) */
 void panel_show(const char *state, bool pa, uint32_t fkhz, const char *l4, const char *l5, const char *l6, const char *l7);  /* host mode */
 void panel_wake(void);                                           /* the beacon stopped for panel input: take the latched buttons */
 

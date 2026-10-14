@@ -200,6 +200,28 @@ The loop holds one frame more that repeats the last step, as receivers may drop 
 To change it, edit and run `python3 host/make_beacon.py` (writes `firmware/main/beacon.bin` and
 `beacon_cfg.h`), then build and flash.
 
+### Stand-alone video
+
+Instead of the test card the firmware loops a video from the `video` partition (`0x110000`, 2.9 MB, about 35 s),
+so a video can be changed without changing the firmware:
+
+```sh
+python3 host/make_video.py media/sintel_trailer.mp4 --start 10 --seconds 20 -o video.bin
+esptool --chip esp32c3 write-flash 0x110000 video.bin
+```
+
+`make_video.py` encodes the chosen part to H.264 + MP2 in a constant-rate transport stream and DVB-S2 encodes the whole loop
+(QPSK 3/4, pilots, normal frames) into a file with a 4 KB header (symbol rate, length, service, CRC32).
+At power-up the firmware checks the header and the CRC; without a valid video it transmits the test card.
+The flash cannot be read through the cache while the loop runs: a cache miss stalls the CPU for about 320 cycles,
+16 DAC samples. So the video loop (`lutf.S`, `tools/gen_lutg.py --flash`) takes its symbols from a 512 byte RAM ring
+that SPI1 fills in the background, 64 bytes per read; every 16 symbols the loop moves one word of SPI1's buffer into the ring.
+That read stalls about 20 cycles, so the video runs at 330.579 kS/s (484 instead of 480 cycles per symbol) and the 4 spare
+cycles absorb it: set the receiver to 330.579 kS/s. Every repetition restarts the TS time base, which costs the receiver a short
+hiccup; a loop that starts and ends at a scene cut hides it. The front panel shows `VIDEO <length> SR331`; frequency, level and
+PA still apply, symbol rate, pilots and service come from the file. `esptool --chip esp32c3 erase-region 0x110000 0x1000`
+brings the test card back.
+
 Run from the repository root with `.venv` activated. These examples loop the included
 Sintel trailer at 2370 MHz; FFmpeg adjusts the video and audio to the channel capacity.
 

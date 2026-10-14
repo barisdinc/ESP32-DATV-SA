@@ -48,6 +48,24 @@ downconverter, …) to the settings in the table above. With the optional OLED /
 front panel you can change frequency, level, symbol rate and the names on the device
 (see the [main README](https://github.com/barisdinc/ESP32-DATV-SA#front-panel)).
 
+## Your own video (optional)
+
+Instead of the test card the board can loop a video of up to about **35 seconds**, stored in its flash
+at **`0x110000`**. The firmware stays the same: to change the video you only write a new video file.
+
+1. Make the file on a PC with Python 3 and FFmpeg (from the repository, after `pip install -r host/requirements.txt`):
+   `python3 host/make_video.py my_film.mp4 --start 10 --seconds 20 -o video.bin`
+   (`--start` and `--seconds` choose the part to take; a loop that starts and ends at a scene cut hides the short hiccup where it repeats).
+2. In esptool-js, flash the firmware as above, then click **Add File** for a second row:
+   **Flash Address `0x110000`**, file `video.bin`, and click **Program**. To change only the video later,
+   program just that row; the firmware is not touched.
+3. Press **RST**. The board plays the video in a loop; the front panel shows `VIDEO 20s SR331`.
+   **Set the receiver to 330.579 kS/s** (330 or 331 if it only takes whole numbers): the video uses a symbol rate
+   slightly below the test card's 333 kS/s. Frequency, level and the other settings are the same.
+
+**Erase Flash** removes the video too; the board then transmits the test card again.
+With esptool you can remove only the video: `esptool --chip esp32c3 erase-region 0x110000 0x1000`.
+
 ## If something does not work
 
 | Problem | Fix |
@@ -106,6 +124,24 @@ Yüklemeden sonra kart, elektrik verildiği anda kendi kendine bir DVB-S2 test y
    - yanındaki dosya düğmesiyle (*Dosya Seç* / *Choose File*) indirdiğiniz `.bin` dosyasını seçin.
 7. **Program**'a tıklayın ve %100 olmasını bekleyin (yaklaşık yarım dakika).
 8. Kartı çıkarıp tekrar takın (veya **RST** düğmesine basın). Kart artık yayında.
+
+### Kendi videonuz (isteğe bağlı)
+
+Kart, test yayını yerine flash belleğinde **`0x110000`** adresine yazılmış, en fazla **~35 saniyelik**
+bir videoyu döngüde yayınlayabilir. Firmware değişmez: videoyu değiştirmek için yalnızca yeni video dosyasını yazarsınız.
+
+1. Dosyayı Python 3 ve FFmpeg kurulu bir bilgisayarda hazırlayın (depodan, `pip install -r host/requirements.txt` sonrası):
+   `python3 host/make_video.py filmim.mp4 --start 10 --seconds 20 -o video.bin`
+   (`--start` ve `--seconds` alınacak bölümü seçer; bir sahne geçişinde başlayıp biten döngü, başa sarmadaki kısa takılmayı gizler).
+2. esptool-js'de firmware'i yukarıdaki gibi yükleyin, sonra **Add File** ile ikinci bir satır ekleyin:
+   **Flash Address `0x110000`**, dosya `video.bin`, ve **Program**'a tıklayın. Sonradan yalnızca videoyu değiştirmek için
+   sadece bu satırı yükleyin; firmware'e dokunulmaz.
+3. **RST**'ye basın. Kart videoyu döngüde yayınlar; ön panelde `VIDEO 20s SR331` görünür.
+   **Alıcıyı 330.579 kS/s'e ayarlayın** (yalnızca tam sayı alıyorsa 330 veya 331): video, test yayınının 333 kS/s'inden
+   biraz düşük bir sembol hızı kullanır. Frekans, seviye ve diğer ayarlar aynıdır.
+
+**Erase Flash** videoyu da siler; kart yeniden test yayınına döner.
+esptool ile yalnızca videoyu silmek için: `esptool --chip esp32c3 erase-region 0x110000 0x1000`.
 
 ### Sorun giderme
 

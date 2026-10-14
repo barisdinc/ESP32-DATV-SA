@@ -22,6 +22,12 @@ usage (from firmware/):  python3 tools/gen_lutg.py > main/lutg.S
                  the loop (EXITC 3). Same slot costs as the streaming loop, so the same pads apply. Only copy N is
                  generated (no silence check, no fill reports), and the wrap in N runs every symbol. The code sits in flash
                  (.text): IRAM is full, and with interrupts off nothing evicts the loop from the cache after its first pass.
+  --flash        main/lutf.S: the beacon loop fed from the flash (stand-alone video, host/make_video.py). The symbols come from a 512 byte
+                 RAM ring that SPI1 fills in the background: copy A moves one word of SPI1's data buffer into the ring, copy B writes the next
+                 flash address and, after the 16th word, starts the next 64 byte read (fast read 0x0B, set up in C); the order A, B, MPER x N
+                 takes exactly 4 bytes = 16 symbols per period. The next copy is kept in NSX across calls. Pads: N as the beacon, A and B
+                 from N's tuned pads corrected by the estimated cost difference (SPI1's data buffer read stalls about 20 cycles: the slot
+                 after it runs late, the spare cycles of the slower symbol schedule absorb it).
   --rec timing   instead of driving the DAC every slot stamps the cycle counter right after the real DAC store and records it
                  (build with "#define LUTG_REC 1" in main.c); the end of the run prints, for every symbol, the slots whose store-to-store
                  spacing differs from P ("slot:cycles") and the nominal length of the sync sled (SLED)
@@ -50,13 +56,15 @@ SCHED = "--nosched" not in sys.argv
 RAW = "--raw" in sys.argv          # no padding at all: the timing build then shows the true cost of every slot
 PSK8 = "--psk8" in sys.argv        # the 8PSK variant: 3 bit symbols (one per nibble in the ring), 6 bit table indices, 256 byte sample stride
 BEACON = "--beacon" in sys.argv    # QPSK from a RAM loop instead of USB (stand-alone beacon)
+FLASH = "--flash" in sys.argv      # the beacon loop fed from the flash through SPI1 (stand-alone video)
+BEACON = BEACON or FLASH           # everything else as the beacon: no silence check or fill reports, a USB byte ends the loop
 assert not (PSK8 and BEACON)
 HERE = os.path.dirname(os.path.abspath(__file__))
 PADFILE = os.path.join(HERE, "lutg_psk8_pads.json" if PSK8 else "lutg_pads.json")
 PADS_ALL = json.load(open(PADFILE)) if os.path.exists(PADFILE) else {}
 
 E = 13               # unrolled event slots per symbol (S >= E + 3)
-FN = "lutg_psk8_run_p" if PSK8 else "lutb_run_p" if BEACON else "lutg_run_p"
+FN = "lutg_psk8_run_p" if PSK8 else "lutf_run_p" if FLASH else "lutb_run_p" if BEACON else "lutg_run_p"
 STRIDE = 256 if PSK8 else 64          # bytes from one sample's table row to the next
 ADJ_SLOT, ADJ = 6, 7 * 256            # 8PSK: the offsets of the unrolled slots would exceed the 12 bit immediate: the row pointers move on after slot 6
 
@@ -74,7 +82,9 @@ NS_INDEX = {c: i for i, c in enumerate(COPIES)}
 # context layout (struct lutg_ctx_t in main.c)
 CTX = dict(T0=0, T1=4, T2=8, T3=12, RING=16, QW=20, QR=24, TN=28, NSYM=32, UNDER=36, MPER=40, MCNT=44, TRX=48, QWSEEN=52, LIM=56, LIM1=60,
            EXITC=64, LATE=68, S64M=72, SPER=76, RLIM=80, NS_N=84, NS_A=88, NS_B=92, NS_C=96, SLEDREC=100, REC=104, RECP=108,
-           PHASE=112, REM=116, DIV=120)
+           PHASE=112, REM=116, DIV=120, FK=124, FOFF=128, FLEN=132, FBASE=136, NSX=140)   # FK..NSX: lutf_ctx_t (--flash)
+FLASH_RING_MASK = 511                # --flash: ring bytes - 1
+EST = {}                             # --flash: estimated cost of copy N's slots (A and B take their pads relative to them)
 
 # cost model in cycles (measured on the C3, see README): alu/load/store 1, APB read ~6, APB write ~8, taken branch 3, j 2, jalr 3
 KERN = 8
@@ -107,6 +117,11 @@ class Slot:
     def finish(self, extra_note=""):
         est = round(self.P - self.cost)
         n = 0 if RAW else self.pads.get(self.key, est)           # a tuned absolute count wins over the estimate
+        if FLASH and self.key[0] == "N":
+            EST[self.key[1:]] = self.cost
+        elif FLASH and not RAW:                                   # A, B: N's tuned pad of the same slot, corrected by the cost difference
+            k = self.key[1:]
+            n = self.pads.get("N" + k, 0) + round(EST.get(k, self.cost) - self.cost)
         if n < 0:
             sys.stderr.write(f"WARNING P={self.P} slot {self.key}: estimated {self.cost:.1f} cycles, over the period\n")
             n = 0
@@ -255,6 +270,8 @@ def a_nsym(c, r="s5"):                # symbols left; leave when done (s5..s8 ar
 
 
 def a_xa():                           # t6 = ring byte holding the next symbol
+    if FLASH:                         # the 512 byte ring; qr runs free
+        return ["    lw   t6, RING(s0)", "    srli t5, a7, 2", f"    andi t5, t5, {FLASH_RING_MASK}", "    nop", "    add  t5, t5, t6", "    lbu  t6, 0(t5)"], 6
     if BEACON:                        # qr wraps at the loop length (a_sb), not at a power of two
         return ["    lw   t6, RING(s0)", "    srli t5, a7, 2", "    nop", "    nop", "    add  t5, t5, t6", "    lbu  t6, 0(t5)"], 6
     return ["    lw   t6, RING(s0)", f"    srli t5, a7, {1 if PSK8 else 2}", "    slli t5, t5, 18", "    srli t5, t5, 18", "    add  t5, t5, t6", "    lbu  t6, 0(t5)"], 6
@@ -312,6 +329,8 @@ def a_rd(c, stubs):                   # read the byte if there is one and the ri
 
 
 def a_sb():                           # byte into the ring (harmless garbage when there was none: qw does not move)
+    if FLASH:                         # nothing to wrap: the same cycles as the beacon's wrap
+        return ["    nop"] * 6, 6
     if BEACON:                        # qr -= RLIM once it reaches the loop length
         return ["    lw   t6, RLIM(s0)", "    mv   t5, a7", "    sltu t5, t5, t6", "    addi t5, t5, -1", "    and  t6, t6, t5", "    sub  a7, a7, t6"], 6
     return ["    lw   t6, RING(s0)", "    slli t5, s11, 18", "    srli t5, t5, 18", "    add  t5, t5, t6", "    sb   gp, 0(t5)", "    add  s11, s11, a4"], 6
@@ -323,6 +342,40 @@ def a_qadj():                         # row pointers for the loop: sample E + 1
 
 def a_adj():                          # 8PSK: row pointers on by 7 samples (keeps the immediates of the later slots small)
     return [f"    addi {q}, {q}, {ADJ}" for q in Q], 4
+
+
+# --flash: copy A moves word FK / 4 of SPI1's data buffer (0x60002058) into the ring, copy B writes the next address and starts a read
+# after the 16th word (a CMD write of 0 does nothing), then moves FOFF on by 64 bytes (wrapping at FLEN). gp, a4, t5, t6 are scratch here.
+def a_fw_addr():
+    return ["    lw   t5, FK(s0)", "    lui  t6, 0x60002", "    add  t6, t6, t5"], 3
+
+
+def a_fw_read():                      # an SPI1 register read stalls about 20 cycles: the nops of this slot overlap part of it
+    return ["    lw   gp, 0x58(t6)"], 1
+
+
+def a_fw_store():
+    return ["    lw   t6, RING(s0)", f"    andi t5, s11, {FLASH_RING_MASK}", "    add  t5, t5, t6", "    sw   gp, 0(t5)", "    addi s11, s11, 4"], 5
+
+
+def a_fw_k():
+    return ["    lw   t5, FK(s0)", "    addi t5, t5, 4", "    andi t5, t5, 63", "    sw   t5, FK(s0)"], 4
+
+
+def a_fb_addr():
+    return ["    lw   t6, FOFF(s0)", "    lw   t5, FBASE(s0)", "    add  t5, t5, t6", "    lui  gp, 0x60002", "    sw   t5, 4(gp)"], 7
+
+
+def a_fb_cmd():                       # a4 = 1 after the 16th word: CMD = USR starts the read
+    return ["    lw   t5, FK(s0)", "    seqz a4, t5", "    slli t5, a4, 18", "    lui  gp, 0x60002", "    sw   t5, 0(gp)"], 7
+
+
+def a_fb_off1():
+    return ["    lw   t6, FOFF(s0)", "    slli t5, a4, 6", "    add  t6, t6, t5", "    lw   t5, FLEN(s0)", "    sltu gp, t6, t5"], 5
+
+
+def a_fb_off2():
+    return ["    addi gp, gp, -1", "    and  t5, t5, gp", "    sub  t6, t6, t5", "    sw   t6, FOFF(s0)"], 4
 
 
 # maintenance
@@ -407,6 +460,18 @@ def copy_code(P, c, pads):
             sch[11] = [lambda: a_next("NS_N", reload=True)]
         sch[11] = sch[11] + [lambda: a_nsym(c, "tp")] if sch[11] else [lambda: a_nsym(c, "tp")]
         sch[12] = [a_qadj]
+    elif FLASH and c == "A":             # one word of SPI1's buffer into the ring
+        sch[6] = [lambda: a_nptr(3), lambda: a_next("NS_B")]
+        sch[7] = [a_fw_addr]
+        sch[8] = [a_fw_read]
+        sch[9] = [a_fw_store]
+        sch[10] = [a_fw_k]
+    elif FLASH and c == "B":             # address, start of the next read, next offset
+        sch[6] = [lambda: a_nptr(3), lambda: a_next("NS_N", reload=True)]
+        sch[7] = [a_fb_addr]
+        sch[8] = [a_fb_cmd]
+        sch[9] = [a_fb_off1]
+        sch[10] = [a_fb_off2]
     elif c == "N":
         sch[6] = [lambda: a_nptr(3), a_mcn_a]
         sch[7] = [a_av]
@@ -518,6 +583,8 @@ def function(P):
     global PADS, CUR_P
     PADS = pads
     CUR_P = P
+    # the first symbol runs copy N; --flash resumes the copy that was next when the previous call ended (NSX, 0 at the start)
+    entry = (f"    lw   t6, NSX(s0)\n    bnez t6, .Lentns{P}\n    la   t6, .LsEN{P}\n.Lentns{P}:" if FLASH else f"    la   t6, .LsEN{P}")
     f = [f"""
     .global {FN}{P}
     .type {FN}{P}, @function
@@ -561,9 +628,9 @@ def function(P):
     xor  t3, t0, a5             /* word of sample 0 */
     la   t5, .LsEN{P}
     sw   t5, NS_N(s0)
-    la   t5, .LsE{"N" if BEACON else "A"}{P}
+    la   t5, .LsE{"A" if FLASH or not BEACON else "N"}{P}
     sw   t5, NS_A(s0)
-    la   t5, .LsE{"N" if BEACON else "B"}{P}
+    la   t5, .LsE{"B" if FLASH or not BEACON else "N"}{P}
     sw   t5, NS_B(s0)
     la   t5, .LsE{"N" if BEACON else "C"}{P}
     sw   t5, NS_C(s0)
@@ -579,15 +646,15 @@ def function(P):
     li   t5, 0
 .Lentok{P}:
     slli t5, t5, 2
-    la   t6, .LsEN{P}
+{entry}
     sub  t6, t6, t5
     jalr x0, 0(t6)
 """]
     ends = {}
-    for c in (("N",) if BEACON else COPIES):         # the beacon has no silence check or fill reports: every symbol runs copy N
+    for c in (("N", "A", "B") if FLASH else ("N",) if BEACON else COPIES):         # the beacon has no silence check or fill reports: every symbol runs copy N
         code, end = copy_code(P, c, pads)
         f.append(code)
-    f.append(f"""lutg{P}_exit:
+    f.append(f"""lutg{P}_exit:{chr(10) + "    sw   s10, NSX(s0)" if FLASH else ""}
     sw   s11, QW(s0)
     sw   a7, QR(s0)
     sw   a0, RECP(s0)
@@ -619,9 +686,10 @@ emit("/* Generated by gen_lutg.py - do not edit by hand (rec mode: " + REC + ").
      " * P = 20 or 24 CPU cycles within a symbol, with an optional fractional cycle in the inter-symbol sync gap.\n"
      " * Tables: 4 groups x 16 rows x S words (RRC span 8). Context: struct lutg_ctx_t in main.c. */" % MIN_S)
 for k, v in CTX.items():
-    emit(f"    .equ {k}, {v}")
+    if FLASH or v < 124:              # FK..NSX only exist in lutf_ctx_t
+        emit(f"    .equ {k}, {v}")
 # The beacon loop runs from flash: IRAM is full, and while it runs (interrupts off) nothing else evicts its 1.7 KB from the cache.
-emit(f'    .section {".text.lutb" if BEACON else ".iram1.lutg_psk8" if PSK8 else ".iram1.lutg"}, "ax"\n    .option norvc')
+emit(f'    .section {".text.lutf" if FLASH else ".text.lutb" if BEACON else ".iram1.lutg_psk8" if PSK8 else ".iram1.lutg"}, "ax"\n    .option norvc')
 for P in ((20,) if PSK8 or BEACON else (20, 24)):
     emit(function(P))
 print("\n".join(o))

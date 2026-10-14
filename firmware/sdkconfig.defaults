@@ -26,3 +26,7 @@ CONFIG_ESP_WIFI_MGMT_SBUF_NUM=6
 
 # Lock APIs are used with the cache enabled; keep IRAM for DAC loops.
 CONFIG_LIBC_LOCKS_PLACE_IN_IRAM=n
+
+# Single app plus the "video" partition of the stand-alone video (host/make_video.py)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

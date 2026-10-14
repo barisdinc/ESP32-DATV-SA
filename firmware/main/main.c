@@ -16,7 +16,8 @@
  *   PA 0|1   arm GPIO3 for the next transmission; PA queries armed state / pin level
  *   QPSKT f_MHz baud sps [amp [seconds [ifm [target [dcI dcQ [g phi]]]]]]   see qpsk_lut.h and README.md
  *   PSK8T ...same arguments   8PSK from the generic loop (3 bit symbols, 16..64 samples per symbol at 8 MS/s)
- * After power-up, until the host sends anything, the firmware transmits a built-in DVB-S2 beacon (see beacon_run).
+ * After power-up, until the host sends anything, the firmware transmits a built-in DVB-S2 beacon, or the video in the "video"
+ * partition when there is one (see beacon_run).
  *
  * Transmit only. Licensed amateur use only: the firmware refuses anything outside 2300..2450 MHz.
  */
@@ -1027,7 +1028,7 @@ static void sr_text(char *b, size_t n, uint32_t baud) { snprintf(b, n, "SR %lu k
 
 /* ------------------------------------------------------------ stand-alone beacon (lutb.S, beacon.bin and beacon_cfg.h from host/make_beacon.py)
  * After power-up the ESP transmits a fixed DVB-S2 loop (test card, service name) from RAM, with the generic 8 MS/s loop, until the host
- * sends a byte. The beacon starts again after BEACON_IDLE_US without input, unless a valid command has arrived since power-up: once a host
+ * sends a byte; a valid video in the "video" partition (host/make_video.py) replaces the test card (lutf.S, see video_find). The beacon starts again after BEACON_IDLE_US without input, unless a valid command has arrived since power-up: once a host
  * has taken over, only a reset brings the beacon back. */
 #include "beacon_cfg.h"
 #define BEACON_PA 0                     /* 1: GPIO3 (PA enable) high while the beacon transmits (default; the front panel can change it) */
@@ -1043,6 +1044,104 @@ static bool host_seen;
  * panel pin moved. The next chunk starts at the exact time the next symbol is due (the same schedule as within a chunk), so a boundary only
  * costs the tail of one symbol and the filter history of the next few; both boundaries lie in the LDPC parity of a frame.
  * Returns 3: a byte from the host, 4: panel input, 0: could not start (the reason is on the screen). */
+/* Stand-alone video (host/make_video.py, written to the "video" partition): a valid header makes the beacon play it instead of the test
+ * card. 1.7 MB do not fit the RAM, and reading them through the flash cache stalls the loop (a miss costs about 320 cycles, 16 DAC
+ * samples), so lutf.S (gen_lutg.py --flash) takes them from a 512 byte RAM ring that SPI1 fills in the background: every 16 symbols
+ * the loop moves one word of SPI1's data buffer into the ring and after every 16th word it starts the next 64 byte read (fast read,
+ * set up here). SPI1 and the cache (SPI0) share the flash bus in hardware; the loop's code stays in the cache, nothing else runs.
+ * The file's symbol rate is a little below 333 kBd: the symbol takes 484 instead of 480 cycles, and the 4 spare cycles absorb the
+ * stall of the data buffer read (about 20 cycles, every 16 symbols). Code rate, pilots and service come from the file. */
+#include "esp_partition.h"
+#include "esp_rom_crc.h"
+#include "hal/spimem_flash_ll.h"
+#include "soc/spi_mem_struct.h"
+typedef struct {
+    char magic[8];
+    uint32_t version, nsym, baud, bytes, crc;                        /* bytes: the symbol data and VIDEO_TAIL bytes repeated past its end */
+    uint8_t pilots, modcod, pad[2];
+    char service[32], provider[32];
+} video_hdr_t;
+#define VIDEO_HEADER 4096u
+#define VIDEO_TAIL 64u                                               /* one SPI1 read may run past the end of the loop */
+#define VIDEO_MODCOD 7u                                              /* QPSK 3/4: the only code rate of the beacon loop (benc_frame_syms) */
+#define VIDEO_RING 512u                                              /* lutf.S: FLASH_RING_MASK + 1 */
+#define VIDEO_LEAD 256u                                              /* ring bytes filled ahead of the loop at the start */
+#define VIDEO_MPER 14u                                               /* copies A, B and 14 x N: 16 symbols = 4 bytes per word */
+typedef struct {
+    lutg_ctx_t g;
+    uint32_t fk, foff, flen, fbase;  /* 124..136: next buffer word (bytes), next read's offset, loop bytes, flash address of the data */
+    uint32_t nsx;                    /* 140: sled end of the copy that runs next (0: copy N) */
+} lutf_ctx_t;
+_Static_assert(offsetof(lutf_ctx_t, fk) == 124 && offsetof(lutf_ctx_t, nsx) == 140, "lutf_ctx_t layout must match lutf.S");
+extern uint32_t lutf_run_p20(lutf_ctx_t *c);
+static const video_hdr_t *video;
+static uint32_t video_addr;                                          /* flash address of the partition */
+static bool video_checked;
+
+static uint32_t video_sper(uint32_t baud) { return (CPU_HZ + baud / 2u) / baud; }   /* cycles per symbol */
+
+static const video_hdr_t *video_find(void) {                        /* the mapped partition when it holds a valid video (checked once) */
+    if (video_checked) return video;
+    video_checked = true;
+    const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "video");
+    const void *map;
+    esp_partition_mmap_handle_t h;
+    if (!part || esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &h) != ESP_OK) {
+        say("VIDEO no partition\r\n");
+        return NULL;
+    }
+    const video_hdr_t *v = map;
+    const uint32_t S = v->baud ? CPU_HZ / v->baud / 20u : 0, sper = v->baud ? video_sper(v->baud) : 0;
+    const char *why = NULL;
+    if (memcmp(v->magic, "DATVVID1", 8) || v->version != 2) why = "none";
+    else if (S != 24u || sper <= 20u * S || sper > 20u * S + 16u || v->modcod != VIDEO_MODCOD || v->nsym == 0 ||
+             v->nsym % (2u * benc_frame_syms(v->pilots != 0)))
+        why = "unsupported format";
+    else if (v->bytes != v->nsym / 4u + VIDEO_TAIL || VIDEO_HEADER + v->bytes > part->size) why = "bad length";
+    else if (esp_rom_crc32_le(0, (const uint8_t *)map + VIDEO_HEADER, v->bytes) != v->crc) why = "bad CRC";
+    if (why) {
+        say("VIDEO %s\r\n", why);
+        esp_partition_munmap(h);
+        return NULL;
+    }
+    say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd\r\n", v->service, v->provider, (unsigned long)v->nsym, (unsigned long)v->baud);
+    static char line[20];
+    snprintf(line, sizeof(line), "VIDEO %lus SR%lu", (unsigned long)((v->nsym + v->baud / 2u) / v->baud), (unsigned long)((v->baud + 500u) / 1000u));
+    panel_video(line);
+    video_addr = part->address;
+    return video = v;
+}
+
+typedef struct { uint32_t ctrl, user, user1, user2, miso, mosi; } spi1_saved_t;
+
+static void spi1_setup(spi1_saved_t *sv) {                          /* fast read 0x0B, single line, 24 bit address, 8 dummy clocks, 64 bytes */
+    spi_mem_dev_t *d = &SPIMEM1;
+    spimem_flash_ll_get_common_command_register_info(d, &sv->ctrl, &sv->user, &sv->user1, &sv->user2);
+    sv->miso = d->miso_dlen.val;
+    sv->mosi = d->mosi_dlen.val;
+    spimem_flash_ll_reset(d);
+    spimem_flash_ll_set_read_mode(d, SPI_FLASH_FASTRD);
+    spimem_flash_ll_set_command(d, 0x0B, 8);
+    spimem_flash_ll_set_addr_bitlen(d, 24);
+    spimem_flash_ll_set_dummy(d, 8);
+    spimem_flash_ll_set_mosi_bitlen(d, 0);
+    spimem_flash_ll_set_miso_bitlen(d, 512);
+}
+
+static void spi1_restore(const spi1_saved_t *sv) {                  /* the flash driver's own setting back */
+    spi_mem_dev_t *d = &SPIMEM1;
+    while (!spimem_flash_ll_cmd_is_done(d)) {}
+    spimem_flash_ll_set_common_command_register_info(d, sv->ctrl, sv->user, sv->user1, sv->user2);
+    d->miso_dlen.val = sv->miso;
+    d->mosi_dlen.val = sv->mosi;
+}
+
+static void spi1_read(uint32_t addr) {                              /* one 64 byte read, waited for */
+    spimem_flash_ll_set_address(&SPIMEM1, addr);
+    spimem_flash_ll_user_start(&SPIMEM1, false);
+    while (!spimem_flash_ll_cmd_is_done(&SPIMEM1)) {}
+}
+
 static int beacon_fail(const char *msg, void *a, void *b, void *c) {
     free(a);
     free(b);
@@ -1054,15 +1153,30 @@ static int beacon_fail(const char *msg, void *a, void *b, void *c) {
 
 static int beacon_run(void) {
     const panel_cfg_t *p = &panel_cfg;
-    const uint32_t baud = panel_sr_baud[p->sr], period = 20, S = CPU_HZ / baud / period;
-    const bool builtin = p->pilots == BEACON_PILOTS && !strcmp(p->service, BEACON_SERVICE) && !strcmp(p->provider, BEACON_PROVIDER);
-    const size_t bytes = (size_t)(beacon_bin_end - beacon_bin_start);
-    if (bytes < BEACON_SYMBOLS / 4u + 4u) return beacon_fail("bad data", NULL, NULL, NULL);
-    uint8_t *loop = malloc(benc_loop_bytes(p->pilots));             /* the big block first */
-    if (!loop) return beacon_fail("no memory", NULL, NULL, NULL);
-    uint32_t nsym = BEACON_SYMBOLS;
-    if (builtin) memcpy(loop, beacon_bin_start, bytes);              /* flash reads would stall the loop */
-    else if (!(nsym = benc_build(loop, beacon_bin_start, p->pilots, p->service, p->provider))) return beacon_fail("encoder", loop, NULL, NULL);
+    const video_hdr_t *v = video_find();
+    const uint32_t baud = v ? v->baud : panel_sr_baud[p->sr], period = 20, S = CPU_HZ / baud / period;
+    uint8_t *loop;
+    uint32_t nsym, chunk;
+    lutf_ctx_t fx;
+    lutg_ctx_t *const c = &fx.g;
+    memset(&fx, 0, sizeof(fx));
+    spi1_saved_t spi1 = {0};
+    if (v) {
+        loop = malloc(VIDEO_RING);
+        if (!loop) return beacon_fail("no memory", NULL, NULL, NULL);
+        nsym = v->nsym;
+        chunk = 4u * benc_frame_syms(v->pilots != 0);                /* 4 PLFRAMEs (0.4 s): the boundaries stay in the LDPC parity */
+    } else {
+        const bool builtin = p->pilots == BEACON_PILOTS && !strcmp(p->service, BEACON_SERVICE) && !strcmp(p->provider, BEACON_PROVIDER);
+        const size_t bytes = (size_t)(beacon_bin_end - beacon_bin_start);
+        if (bytes < BEACON_SYMBOLS / 4u + 4u) return beacon_fail("bad data", NULL, NULL, NULL);
+        loop = malloc(benc_loop_bytes(p->pilots));                   /* the big block first */
+        if (!loop) return beacon_fail("no memory", NULL, NULL, NULL);
+        nsym = BEACON_SYMBOLS;
+        if (builtin) memcpy(loop, beacon_bin_start, bytes);          /* flash reads would stall the loop */
+        else if (!(nsym = benc_build(loop, beacon_bin_start, p->pilots, p->service, p->provider))) return beacon_fail("encoder", loop, NULL, NULL);
+        chunk = nsym / 2;
+    }
     int32_t *T = malloc(lutt_bytes(S));
     float *hb = malloc(8 * S * sizeof(float));
     if (!T || !hb) return beacon_fail("no memory", loop, T, hb);
@@ -1070,21 +1184,39 @@ static int beacon_run(void) {
     free(hb);
     if (!tune(p->fkhz)) return beacon_fail("frequency", loop, T, NULL);
     const sample_clock_t symbol_clock = sample_clock_init(CPU_HZ, baud);
-    lutg_ctx_t c;
-    memset(&c, 0, sizeof(c));
-    for (uint32_t g = 0; g < 4; ++g) c.t[g] = T + g * S * 16;
-    c.ring = loop;
-    c.rlim = nsym;                                                   /* lutb.S: the loop length in symbols */
-    c.qr = nsym - 1000;                                              /* start in the LDPC parity of the last frame (frames are even) */
-    c.mper = c.mcnt = 2048;
-    c.lim = c.lim1 = UINT32_MAX;                                     /* no silence limit */
-    c.s64m = 64u * (S - 1);
-    c.sper = S * period;
-    c.rem = symbol_clock.period == S * period ? symbol_clock.remainder : 0;
-    c.div = symbol_clock.period == S * period ? symbol_clock.divisor : 1;
-    const uint32_t chunk = nsym / 2;
-    const uint64_t carry = (uint64_t)chunk * c.rem;                 /* a chunk lasts chunk * sper + (phase + carry) / div cycles */
-    const uint32_t chunk_cyc = chunk * c.sper + (uint32_t)(carry / c.div), chunk_rem = (uint32_t)(carry % c.div);
+    for (uint32_t g = 0; g < 4; ++g) c->t[g] = T + g * S * 16;
+    c->ring = loop;
+    c->lim = c->lim1 = UINT32_MAX;                                   /* no silence limit */
+    c->s64m = 64u * (S - 1);
+    if (v) {
+        /* The loop starts in the LDPC parity of the last frame, file byte o0; ring byte i holds file byte o0 + i (qr counts symbols from
+         * there). The first VIDEO_LEAD bytes go in now, SPI1's buffer holds the next 64, the loop takes it from there. */
+        const uint8_t *data = (const uint8_t *)v + VIDEO_HEADER;
+        const uint32_t len = nsym / 4u, o0 = (nsym - 1000u) / 4u, base = video_addr + VIDEO_HEADER;
+        for (uint32_t i = 0; i < VIDEO_LEAD; ++i) loop[i] = data[(o0 + i) % len];
+        spi1_setup(&spi1);
+        spi1_read(base + (o0 + VIDEO_LEAD) % len);
+        fx.fk = 0;
+        fx.foff = (o0 + VIDEO_LEAD + 64u) % len;
+        fx.flen = len;
+        fx.fbase = base;
+        c->qr = 0;
+        c->qw = VIDEO_LEAD;
+        c->rlim = UINT32_MAX;
+        c->mper = c->mcnt = VIDEO_MPER;
+        c->sper = video_sper(baud);                                  /* S * 20 plus the spare cycles; no fractional clock */
+        c->rem = 0;
+        c->div = 1;
+    } else {
+        c->rlim = nsym;                                              /* lutb.S: the loop length in symbols */
+        c->qr = nsym - 1000;                                         /* start in the LDPC parity of the last frame (frames are even) */
+        c->mper = c->mcnt = 2048;
+        c->sper = S * period;
+        c->rem = symbol_clock.period == S * period ? symbol_clock.remainder : 0;
+        c->div = symbol_clock.period == S * period ? symbol_clock.divisor : 1;
+    }
+    const uint64_t carry = (uint64_t)chunk * c->rem;                /* a chunk lasts chunk * sper + (phase + carry) / div cycles */
+    const uint32_t chunk_cyc = chunk * c->sper + (uint32_t)(carry / c->div), chunk_rem = (uint32_t)(carry % c->div);
     panel_error(NULL);
     const uint32_t owner0 = rd(SRAM_OWNER);
     pa_set(p->pa);
@@ -1099,24 +1231,26 @@ static int beacon_run(void) {
     wr(DAC_CTRL, rd(DAC_CTRL) & ~(1u << 31));
     wr(DAC_CTRL, 0x80000u | 1u);
     wr(DAC_CTRL, 0x80000u | 1u | (1u << 31));
-    c.tn = c.trx = ccount() + 20000;
+    c->tn = c->trx = ccount() + 20000;
     uint32_t chunks = 0;
     int why;
     for (;;) {
-        const uint32_t tn = c.tn, ph = c.phase;
-        c.nsym = chunk;
-        c.exitc = 0;
-        lutb_run_p20(&c);
+        const uint32_t tn = c->tn, ph = c->phase;
+        c->nsym = chunk;
+        c->exitc = 0;
+        if (v) lutf_run_p20(&fx);
+        else lutb_run_p20(c);
         ++chunks;
-        if (c.exitc == 3) { why = 3; break; }                        /* a byte from the host */
+        if (c->exitc == 3) { why = 3; break; }                       /* a byte from the host */
         if (panel_latched()) { why = 4; break; }
-        c.tn = c.trx = tn + chunk_cyc + (ph + chunk_rem >= c.div ? 1u : 0u);
+        c->tn = c->trx = tn + chunk_cyc + (ph + chunk_rem >= c->div ? 1u : 0u);
     }
-    const uint32_t late = c.late;
+    const uint32_t late = c->late;
     DAC_BUF[0] = 0;
     wr(DAC_CTRL, rd(DAC_CTRL) & ~(1u << 31));
     wr(SRAM_OWNER, owner0);
     taskEXIT_CRITICAL(&stream_mux);
+    if (v) spi1_restore(&spi1);
     phy_txforce(0);
     pa_set(false);
     tx_leave();
