@@ -7,10 +7,12 @@ beacon_enc.c is plain C: it is built here with the system compiler and asked to 
   3. with another service name and provider,
 and the results are compared with dvbs2.Encoder fed with the BBFRAMEs read back out of beacon.bin (LDPC is systematic).
 
-usage (from the repository root):  python3 host/test_beacon_enc.py
+usage (from the repository root):  python3 host/test_beacon_enc.py [DIR]
+DIR holds beacon.bin, beacon_cfg.h and beacon_fec.h of a make_beacon.py run (default firmware/main); normal or short frames.
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,16 +47,19 @@ int main(int argc, char **argv) {
 """
 
 
-def cfg():
-    text = open(os.path.join(MAIN, "beacon_cfg.h")).read()
+def cfg(d):
+    text = open(os.path.join(d, "beacon_cfg.h")).read()
+    short = re.search(r"#define BEACON_FRAME_SHORT\s+1", text) is not None
     get = lambda k: re.search(rf"#define {k}\s+(\S+)", text).group(1)
     return dict(fec=get("BEACON_FEC").strip('"'), pilots=get("BEACON_PILOTS") == "1", symbols=int(get("BEACON_SYMBOLS").rstrip("u")),
-                service=re.search(r'BEACON_SERVICE\s+"(.*)"', text).group(1), provider=re.search(r'BEACON_PROVIDER\s+"(.*)"', text).group(1))
+                service=re.search(r'BEACON_SERVICE\s+"(.*)"', text).group(1), provider=re.search(r'BEACON_PROVIDER\s+"(.*)"', text).group(1),
+                frame="short" if short else "normal")
 
 
 def bbframes(loop, c):
     """The BBFRAMEs (scrambled, as dvbs2.Encoder.plframe takes them) read back out of the packed loop."""
-    enc = dvbs2.Encoder(c["fec"], "normal", c["pilots"], mod="qpsk")
+    enc = dvbs2.Encoder(c["fec"], c["frame"], c["pilots"], mod="qpsk")
+    slots = (16200 if c["frame"] == "short" else 64800) // 2 // 90
     s = np.frombuffer(loop, np.uint8)
     sym = np.stack([s & 3, s >> 2 & 3, s >> 4 & 3, s >> 6 & 3], 1).reshape(-1)[:c["symbols"]]
     out = []
@@ -66,7 +71,7 @@ def bbframes(loop, c):
         sq = np.where(r == 0, lq, np.where(r == 1, -li, np.where(r == 2, -lq, li)))
         if c["pilots"]:
             keep = np.ones(len(fr), bool)
-            for b in range((360 - 1) // 16):
+            for b in range((slots - 1) // 16):
                 n0 = 1440 * (b + 1) + 36 * b
                 keep[n0:n0 + 36] = False
             si, sq = si[keep], sq[keep]
@@ -76,8 +81,8 @@ def bbframes(loop, c):
     return out
 
 
-def encode(bbs, fec, pilots):
-    enc = dvbs2.Encoder(fec, "normal", pilots, mod="qpsk")
+def encode(bbs, fec, pilots, frame="normal"):
+    enc = dvbs2.Encoder(fec, frame, pilots, mod="qpsk")
     out = b"".join(enc.pack(*enc.plframe(bb)) for bb in bbs)
     return out + out[:16]
 
@@ -98,14 +103,18 @@ def patch_sdt(bb, kbch, service, provider):
 
 
 def main():
-    c = cfg()
-    src = os.path.join(MAIN, "beacon.bin")
+    d = sys.argv[1] if len(sys.argv) > 1 else MAIN
+    c = cfg(d)
+    src = os.path.join(d, "beacon.bin")
     loop = open(src, "rb").read()
     with tempfile.TemporaryDirectory() as tmp:
         open(os.path.join(tmp, "t.c"), "w").write(HARNESS)
+        # the encoder next to the headers under test: #include "..." looks in the source file's directory first
+        for name, where in (("beacon_enc.c", MAIN), ("beacon_enc.h", MAIN), ("beacon_cfg.h", d), ("beacon_fec.h", d)):
+            shutil.copy(os.path.join(where, name), tmp)
         exe = os.path.join(tmp, "t")
-        subprocess.run(["cc", "-O2", "-std=c11", "-Wall", "-Werror", "-I", MAIN, "-o", exe, os.path.join(tmp, "t.c"),
-                        os.path.join(MAIN, "beacon_enc.c")], check=True)
+        subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Werror", "-I", tmp, "-o", exe, os.path.join(tmp, "t.c"),
+                        os.path.join(tmp, "beacon_enc.c")], check=True)
 
         def run(pilots, service, provider):
             out = os.path.join(tmp, "out.bin")
@@ -113,14 +122,16 @@ def main():
             return open(out, "rb").read()
 
         bbs = bbframes(loop, c)
-        assert encode(bbs, c["fec"], c["pilots"]) == loop, "dvbs2.py does not reproduce beacon.bin from its own BBFRAMEs"
+        f = c["frame"]
+        print(f"{d}: {c['fec']} {f} frames, pilots {int(c['pilots'])}, {len(bbs)} PLFRAMEs")
+        assert encode(bbs, c["fec"], c["pilots"], f) == loop, "dvbs2.py does not reproduce beacon.bin from its own BBFRAMEs"
         checks = [
             ("unchanged", run(c["pilots"], c["service"], c["provider"]), loop),
-            ("pilots " + ("off" if c["pilots"] else "on"), run(not c["pilots"], c["service"], c["provider"]), encode(bbs, c["fec"], not c["pilots"])),
+            ("pilots " + ("off" if c["pilots"] else "on"), run(not c["pilots"], c["service"], c["provider"]), encode(bbs, c["fec"], not c["pilots"], f)),
         ]
         for pil in (c["pilots"], not c["pilots"]):
             new = [patch_sdt(bbs[0], len(bbs[0]) * 8, "TEST-SVC 123", "Some Provider/x")] + bbs[1:]
-            checks.append((f"new names, pilots {int(pil)}", run(pil, "TEST-SVC 123", "Some Provider/x"), encode(new, c["fec"], pil)))
+            checks.append((f"new names, pilots {int(pil)}", run(pil, "TEST-SVC 123", "Some Provider/x"), encode(new, c["fec"], pil, f)))
         ok = True
         for name, got, want in checks:
             same = got == want

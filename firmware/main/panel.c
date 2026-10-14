@@ -243,7 +243,11 @@ void panel_draw(void) {
     snprintf(b, sizeof(b), "%4lu.%03lu", (unsigned long)(c->fkhz / 1000), (unsigned long)(c->fkhz % 1000));
     oled_text(&f, 0, 2, 2, b);
     oled_text(&f, OLED_W - 18, 3, 1, "MHz");
-    const char *src = c->video ? (ui.video ? ui.video : "VIDEO none") : "TEST CARD " BEACON_FEC;
+#ifndef BEACON_MODE_TEXT                                         /* beacon_cfg.h from before short frames */
+#define BEACON_MODE_TEXT "TEST CARD " BEACON_FEC
+#endif
+    /* source: the video in the flash, or the test card with its mode ("S2 QPSK 3/4 SF" with short frames) */
+    const char *src = c->video ? (ui.video ? ui.video : "VIDEO none") : BEACON_MODE_TEXT;
     oled_text(&f, 0, 4, 1, ui.msg ? ui.msg : src);
     snprintf(b, sizeof(b), "%+ddB", c->level_db);
     oled_text(&f, 96, 4, 1, b);

@@ -1044,6 +1044,9 @@ static bool host_seen;
  * signal that does not scale with the level, so it ends reception at low levels (about -10 dBc). Built-in values from
  * beacon_cfg.h (make_beacon.py --dc-i/--dc-q/--cal), replaced by those saved with "BDC SAVE" (NVS "beacon"/"dc").
  * "BDC i q" sets them and restarts the beacon at once, for nulling the leakage with a receiver. */
+#ifndef BEACON_FRAME_SHORT                                       /* beacon_cfg.h from before short frames */
+#define BEACON_FRAME_SHORT 0
+#endif
 #ifndef BEACON_DC_I
 #define BEACON_DC_I     0.0f
 #define BEACON_DC_Q     0.0f
@@ -1309,6 +1312,8 @@ static void handle(char *line) {
     host_seen = true;                                                /* a valid command: the host has taken over */
     if (!strcmp(line, "INFO")) {
         say("ESP32DATV 1 PA_GPIO %u\r\n", (unsigned)PA_ENABLE_GPIO);
+        say("BEACON %lu Bd QPSK %s %s frames x %lu, pilots %u\r\n", (unsigned long)BEACON_BAUD, BEACON_FEC,
+            BEACON_FRAME_SHORT ? "short" : "normal", (unsigned long)benc_frames(), (unsigned)BEACON_PILOTS);
     } else if (!strcmp(line, "PA")) {
         say("PA GPIO %u ARMED %u LEVEL %u\r\n", (unsigned)PA_ENABLE_GPIO,
             (unsigned)pa_requested, (unsigned)gpio_get_level(PA_ENABLE_GPIO));
