@@ -80,8 +80,14 @@ static uint32_t crc32_mpeg(const uint8_t *d, size_t n) {
     return c;
 }
 
+static size_t name_len(const char *s) {                         /* strnlen(s, BENC_NAME_MAX): strnlen is POSIX, not C11 */
+    size_t n = 0;
+    while (n < BENC_NAME_MAX && s[n]) ++n;
+    return n;
+}
+
 static void sdt_packet(uint8_t *p, const char *service, const char *provider) {
-    const size_t sn = strnlen(service, BENC_NAME_MAX), pn = strnlen(provider, BENC_NAME_MAX);
+    const size_t sn = name_len(service), pn = name_len(provider);
     uint8_t s[PKT];
     size_t k = 0;
     const size_t dl = 5 + pn + sn, n = 5 + 3 + 5 + dl + 4;    /* service descriptor; section length after the length field */
