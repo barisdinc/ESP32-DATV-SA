@@ -209,7 +209,10 @@ To change it, edit and run `python3 host/make_beacon.py` (writes `firmware/main/
 
 Instead of the test card the firmware loops a video from the `video` partition (`0x110000`, 2.9 MB, about 35 s),
 so a video can be changed without changing the firmware. Step by step, with the web flasher, in English and Turkish:
-**[Storing and playing video from internal flash](docs/VIDEO.md)**.
+**[Storing and playing video from internal flash](docs/VIDEO.md)**. The video file can be made without installing
+anything in the browser with the **[video converter](https://barisdinc.github.io/ESP32-DATV-SA/converter/)**
+(source: [`docs/converter/`](docs/converter/), FFmpeg as WebAssembly + `datv_video.js`, byte for byte the same DVB-S2
+encoding as `make_video.py`), or on the command line:
 
 ```sh
 python3 host/make_video.py media/sintel_trailer.mp4 --start 10 --seconds 20 -o video.bin
