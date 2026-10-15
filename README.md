@@ -42,7 +42,7 @@ push button and three buttons. Every field on the screen can be changed on the d
  2300.500           MHz     frequency, digit by digit (10 MHz ... 1 kHz), kept inside 2300..2450 MHz
  TEST CARD 3/4    -27dB     source: TEST CARD or VIDEO <length> (the video in the flash, see below);
                             level, -40 ... +4 dB relative to amplitude 300 (modulation and FEC are fixed)
- SR 333 kS/s     pilots     symbol rate 125 / 250 / 333 / 400 / 500 kS/s, pilots / noPilots
+ SR 333 kS/s     pilots     symbol rate 40 / 50 / 66 / 100 / 125 / 250 / 333 / 400 / 500 kS/s, pilots / noPilots
  S yATOLYE-TV               service name (up to 20 characters)
  P TEST PATTERN             service provider (up to 20 characters)
 ```
@@ -100,6 +100,19 @@ The strapping pins GPIO2, GPIO8 (LED) and GPIO9 (BOOT) and the USB pins GPIO18/1
 Buttons and encoder switch to GND; the internal pull-ups are enabled. If the encoder turns the wrong way or
 needs two detents per step, change `ENC_DIR` / `ENC_STEPS` in `panel.c`. Keep the I2C wires short
 (10–15 cm), away from the antenna. Pin order differs between SuperMini clones: check the silkscreen.
+
+**Seeed XIAO ESP32-C3:** it does not bring out GPIO0/1, so the OLED moves to SDA GPIO4 (D2) and SCL GPIO2 (D0);
+select it in `idf.py menuconfig` → ESP32-DATV-SA → Board (or `CONFIG_DATV_BOARD_XIAO_C3=y` in `sdkconfig`).
+Everything else keeps its GPIO: EC11 A / B / SW on D3 / D4 / D5, K1 on D10, K2 on D7, K3 on D6, PA enable on D1.
+GPIO2 is a strapping pin; the I2C pull-ups keep it high at reset, as it should be.
+
+| Panel | XIAO pin | GPIO |
+|---|---|---|
+| OLED SDA / SCL | D2 / D0 | 4 / 2 |
+| EC11 A / B / SW | D3 / D4 / D5 | 5 / 6 / 7 |
+| K1 / K2 / K3 | D10 / D7 / D6 | 10 / 20 / 21 |
+| PA enable | D1 | 3 |
+| VCC / GND | 3V3 / GND | – |
 
 <p align="center"><img src="docs/standalone.svg" alt="ESP32-DATV-SA block diagram" width="820"></p>
 
@@ -203,6 +216,14 @@ reset, otherwise it resumes after 5 s. PA enable (GPIO3) stays low unless `BEACO
 The beacon sits at the bottom of the 13 cm band, about 100 MHz below Wi-Fi channel 1, at amplitude 13
 (about −27 dB from the usual 300, the GUI's minimum level), so it does not disturb nearby Wi-Fi.
 Use `--freq` and `--amp` of `make_beacon.py` for another frequency or level.
+`--baud` builds the loop for another symbol rate: 40000, 50000, 66666, 100000, 125000, 250000, 333000, 400000 or 500000
+(8 MS/s with a whole number of 16..232 samples per symbol). The tables take 256 bytes per sample per symbol, so below
+125 kS/s use `--frames 2` to leave enough heap for the loop. Tested with leandvb down to 40 kS/s (QPSK 3/4).
+The carrier leakage of the C3 (a fixed tone in the middle of the signal) does not go down with the level, so at low
+levels it limits reception. `--cal cal.json` (the format of `tx_dvbs.py --cal`) or `--dc-i` / `--dc-q` / `--iq-gain` /
+`--iq-phase` build a DC / I/Q correction into the beacon; the USB command `BDC i q` sets the DC correction at run time
+and restarts the beacon at once (for nulling the tone while watching it on a receiver), `BDC SAVE` keeps it in NVS
+(it then wins over the built-in values), `BDC RESET` goes back to them and `BDC` shows the current values.
 The test card reads `ESP32 DATV-SA` / `Project by yATOLYE` / `Turkish Hamradio Community` (`--card-text` for other lines);
 its text is drawn with Pillow, so FFmpeg needs no drawtext. Three squares right of the second line step on every frame
 (the red one moves left to right, 2.5 times a second), so a receiver sees that the beacon is live; they cost under 1 KB per loop.

@@ -4,9 +4,12 @@
 #include <string.h>
 #include "beacon_cfg.h"
 #include "beacon_fec.h"
+#ifndef BFEC_SHORT
+#define BFEC_SHORT 0u                                            /* beacon_fec.h from before short frames */
+#endif
 
 #define HDR        90u                                           /* PLHEADER symbols */
-#define DATA_SYMS  (BFEC_NLDPC / 2)                              /* QPSK: 32400 */
+#define DATA_SYMS  (BFEC_NLDPC / 2)                              /* QPSK: 32400 normal, 8100 short */
 #define SLOTS      (DATA_SYMS / 90)
 #define PBLOCKS    ((SLOTS - 1) / 16)                            /* 36 pilot symbols after every 16 slots, none after the last */
 #define BB_SYMS    (BFEC_KBCH / 2)                               /* symbols that carry the BBFRAME */
@@ -22,7 +25,8 @@ uint32_t benc_frame_syms(bool pilots) { return HDR + DATA_SYMS + (pilots ? 36u *
 uint32_t benc_frames(void) { return BEACON_SYMBOLS / benc_frame_syms(BEACON_PILOTS); }
 size_t benc_loop_bytes(bool pilots) { return benc_frames() * benc_frame_syms(pilots) / 4u + 16u; }
 _Static_assert(BEACON_SYMBOLS % (HDR + DATA_SYMS + (BEACON_PILOTS ? 36u * PBLOCKS : 0u)) == 0, "beacon.bin: whole PLFRAMEs");
-_Static_assert(BFEC_KLDPC == BFEC_KBCH + BFEC_BCH && BFEC_BCH == 192u, "BCH t = 12 (six 32-bit words)");
+/* BCH t = 12: 192 parity bits (normal) or 168 (short); both fit the six 32-bit words of the left-aligned register */
+_Static_assert(BFEC_KLDPC == BFEC_KBCH + BFEC_BCH && (BFEC_BCH == 192u || (BFEC_SHORT && BFEC_BCH == 168u)), "BCH t = 12");
 
 /* ------------------------------------------------------------ packed 2-bit symbols, first symbol in the low bits; level 1 = +1 */
 
@@ -132,7 +136,7 @@ static uint8_t bb_byte(const uint8_t *src, uint32_t j) {
 
 static void plheader(uint8_t *hdr, bool pilots) {
     static const uint32_t RM[6] = {0x55555555u, 0x33333333u, 0x0F0F0F0Fu, 0x00FF00FFu, 0x0000FFFFu, 0xFFFFFFFFu};
-    const unsigned pls = BFEC_MODCOD << 2 | (pilots ? 1u : 0u);
+    const unsigned pls = BFEC_MODCOD << 2 | BFEC_SHORT << 1 | (pilots ? 1u : 0u);   /* MODCOD, TYPE (short, pilots) */
     uint32_t cw = 0;
     for (int i = 0; i < 6; ++i)
         if (pls >> (6 - i) & 1u) cw ^= RM[i];
@@ -192,7 +196,7 @@ static void frame(const uint8_t *src, uint32_t sbase, out_t *o, const rot_t *r0,
                     const uint32_t n = data_pos(d, BEACON_PILOTS);
                     b = (UNROT[rot_at(&rs, n)][sym_get(src, sbase + HDR + n)] ^ 3u) >> h & 1u;
                 }
-                const uint32_t fb = b ^ bch[0] >> 31;            /* BCH: remainder of data * x^192 */
+                const uint32_t fb = b ^ bch[0] >> 31;            /* BCH: remainder of data * x^192 (x^168, left-aligned) */
                 for (int w = 0; w < 5; ++w) bch[w] = bch[w] << 1 | bch[w + 1] >> 31;
                 bch[5] <<= 1;
                 if (fb)
