@@ -3,6 +3,10 @@
 
 *Türkçe açıklama aşağıda — [Türkçe](#türkçe).*
 
+> ### Video converter — https://barisdinc.github.io/ESP32-DATV-SA/converter/
+> Turn any video file into the `video.bin` for the transmitter **in your web browser**, with nothing to install.
+> Then write it at `0x110000` with <https://espressif.github.io/esptool-js/>.
+
 Instead of the built-in test card, ESP32-DATV-SA can transmit a short video clip in a loop, stored in the
 ESP32-C3's own 4 MB flash. No PC is needed while it transmits. The video lives in its own area of the
 flash (address **`0x110000`**), so you can change the video at any time **without changing the firmware**,
@@ -19,7 +23,7 @@ and you can update the firmware without losing the video.
 
 The work has three parts:
 
-1. [Prepare the video](#1-prepare-the-video) on a PC: turn any video file into `video.bin`.
+1. [Prepare the video](#1-prepare-the-video): turn any video file into `video.bin`, in the browser at <https://barisdinc.github.io/ESP32-DATV-SA/converter/> or with Python.
 2. Write it to the board with the web flasher at <https://espressif.github.io/esptool-js/>:
    [firmware and video together](#2-firmware-and-video-together-new-board) on a new board, or
    [only the video](#3-only-the-video-change-the-video) to change the video.
@@ -27,7 +31,7 @@ The work has three parts:
 
 ## 1. Prepare the video
 
-**In the browser:** the **[video converter](https://barisdinc.github.io/ESP32-DATV-SA/converter/)** page does the same as `make_video.py` below, with nothing to
+**In the browser:** open **<https://barisdinc.github.io/ESP32-DATV-SA/converter/>**. The page does the same as `make_video.py` below, with nothing to
 install (FFmpeg runs in the browser as WebAssembly; the file is not uploaded). Choose the file, the start and the
 length, press *Convert* and download `…_video.bin`. (Offline: `python3 -m http.server -d docs 8000` in the repository,
 then <http://localhost:8000/converter/>.) Then continue with section 2 or 3.
@@ -183,6 +187,10 @@ copies one word out of SPI1's buffer, which takes about 20 cycles. To make room 
 
 ## Türkçe
 
+> ### Video dönüştürücü — https://barisdinc.github.io/ESP32-DATV-SA/converter/
+> Herhangi bir video dosyasını vericinin `video.bin` dosyasına **web tarayıcınızda**, hiçbir şey kurmadan çevirin.
+> Sonra <https://espressif.github.io/esptool-js/> ile `0x110000` adresine yazın.
+
 ESP32-DATV-SA, dahili test yayını yerine ESP32-C3'ün kendi 4 MB flash belleğinde saklanan kısa bir
 videoyu döngüde yayınlayabilir. Yayın sırasında bilgisayar gerekmez. Video flash'ta kendine ait bir
 bölgede (**`0x110000`** adresi) durur; böylece videoyu **firmware'i değiştirmeden** istediğiniz zaman
@@ -199,7 +207,7 @@ değiştirebilir, firmware'i de videoyu kaybetmeden güncelleyebilirsiniz.
 
 İş üç bölümden oluşur:
 
-1. Bilgisayarda [videoyu hazırlamak](#1-videoyu-hazırlamak): herhangi bir video dosyasından `video.bin` üretmek.
+1. [Videoyu hazırlamak](#1-videoyu-hazırlamak): herhangi bir video dosyasından `video.bin` üretmek; tarayıcıda <https://barisdinc.github.io/ESP32-DATV-SA/converter/> ya da Python ile.
 2. <https://espressif.github.io/esptool-js/> web yükleyicisiyle karta yazmak: yeni kartta
    [firmware ve video birlikte](#2-firmware-ve-video-birlikte-yeni-kart), videoyu değiştirmek için
    [yalnızca video](#3-yalnızca-video-videoyu-değiştirmek).
@@ -207,7 +215,7 @@ değiştirebilir, firmware'i de videoyu kaybetmeden güncelleyebilirsiniz.
 
 ### 1. Videoyu hazırlamak
 
-**Tarayıcıda:** **[video dönüştürücü](https://barisdinc.github.io/ESP32-DATV-SA/converter/)** sayfası aşağıdaki `make_video.py` ile aynı işi kurulum gerektirmeden
+**Tarayıcıda:** **<https://barisdinc.github.io/ESP32-DATV-SA/converter/>** adresini açın. Bu sayfa aşağıdaki `make_video.py` ile aynı işi kurulum gerektirmeden
 yapar (FFmpeg tarayıcıda WebAssembly olarak çalışır; dosya hiçbir yere yüklenmez). Dosyayı, başlangıcı ve uzunluğu
 seçin, *Dönüştür*'e basın ve `…_video.bin`'i indirin. (İnternetsiz: depoda `python3 -m http.server -d docs 8000`,
 ardından <http://localhost:8000/converter/>.) Sonra 2. ya da 3. bölümle devam edin.

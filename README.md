@@ -20,9 +20,14 @@ takes over (see [Stand-alone beacon](#stand-alone-beacon)).
 > *Hiçbir şeyle uğraşmadan sadece ESP32-C3'ünüze firmware yüklemek istiyorsanız
 > [bu rehberi](docs/FLASHING.md#türkçe) takip edin.*
 >
-> **Your own video instead of the test card:** [docs/VIDEO.md](docs/VIDEO.md) — convert a clip in the browser with the
-> **[video converter](https://barisdinc.github.io/ESP32-DATV-SA/converter/)** and write it with the same web flasher. *Test yayını yerine kendi videonuz:
-> [bu rehber](docs/VIDEO.md#türkçe), [video dönüştürücü](https://barisdinc.github.io/ESP32-DATV-SA/converter/).*
+> **Your own video instead of the test card:** [docs/VIDEO.md](docs/VIDEO.md) — convert a clip in the browser and
+> write it with the same web flasher. *Test yayını yerine kendi videonuz: [bu rehber](docs/VIDEO.md#türkçe).*
+
+> ### Video converter / Video dönüştürücü
+> **https://barisdinc.github.io/ESP32-DATV-SA/converter/**
+>
+> Turn any video file into the transmitter's `video.bin` in your web browser — nothing to install, the file is not
+> uploaded. *Herhangi bir video dosyasını tarayıcınızda, hiçbir şey kurmadan vericinin `video.bin` dosyasına çevirin.*
 
 An optional [front panel](#front-panel) (OLED, rotary encoder, three buttons) sets frequency, level,
 symbol rate, pilots, PA enable, service name and provider directly on the device.
@@ -210,7 +215,7 @@ To change it, edit and run `python3 host/make_beacon.py` (writes `firmware/main/
 Instead of the test card the firmware loops a video from the `video` partition (`0x110000`, 2.9 MB, about 35 s),
 so a video can be changed without changing the firmware. Step by step, with the web flasher, in English and Turkish:
 **[Storing and playing video from internal flash](docs/VIDEO.md)**. The video file can be made without installing
-anything in the browser with the **[video converter](https://barisdinc.github.io/ESP32-DATV-SA/converter/)**
+anything in the browser with the video converter at **<https://barisdinc.github.io/ESP32-DATV-SA/converter/>**
 (source: [`docs/converter/`](docs/converter/), FFmpeg as WebAssembly + `datv_video.js`, byte for byte the same DVB-S2
 encoding as `make_video.py`), or on the command line:
 
