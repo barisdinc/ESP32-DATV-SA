@@ -16,6 +16,8 @@
  *   PA 0|1   arm GPIO3 for the next transmission; PA queries armed state / pin level
  *   QPSKT f_MHz baud sps [amp [seconds [ifm [target [dcI dcQ [g phi]]]]]]   see qpsk_lut.h and README.md
  *   PSK8T ...same arguments   8PSK from the generic loop (3 bit symbols, 16..64 samples per symbol at 8 MS/s)
+ *   BDC [i q | SAVE | RESET]   beacon DC correction [DAC codes] against the carrier leakage: show / set and restart the beacon /
+ *                              keep in NVS / back to the built-in values of beacon_cfg.h
  * After power-up, until the host sends anything, the firmware transmits a built-in DVB-S2 beacon, or the video in the "video"
  * partition when there is one (see beacon_run).
  *
@@ -1038,6 +1040,49 @@ extern const uint8_t beacon_bin_end[] asm("_binary_beacon_bin_end");
 extern uint32_t lutb_run_p20(lutg_ctx_t *c);
 static bool host_seen;
 
+/* DC correction of the beacon [DAC codes] against the carrier leakage of the DAC / mixer: a fixed tone in the middle of the
+ * signal that does not scale with the level, so it ends reception at low levels (about -10 dBc). Built-in values from
+ * beacon_cfg.h (make_beacon.py --dc-i/--dc-q/--cal), replaced by those saved with "BDC SAVE" (NVS "beacon"/"dc").
+ * "BDC i q" sets them and restarts the beacon at once, for nulling the leakage with a receiver. */
+#ifndef BEACON_FRAME_SHORT                                       /* beacon_cfg.h from before short frames */
+#define BEACON_FRAME_SHORT 0
+#endif
+#ifndef BEACON_DC_I
+#define BEACON_DC_I     0.0f
+#define BEACON_DC_Q     0.0f
+#define BEACON_IQ_GAIN  1.0f
+#define BEACON_IQ_PHASE 0.0f
+#endif
+static float beacon_dc[2] = {BEACON_DC_I, BEACON_DC_Q};
+static bool beacon_dc_saved;                    /* beacon_dc came from NVS */
+static bool beacon_restart;                     /* BDC: start the beacon again at once */
+
+static void beacon_dc_load(void) {
+    nvs_handle_t h;
+    if (nvs_open("beacon", NVS_READONLY, &h) != ESP_OK) return;
+    float v[2];
+    size_t n = sizeof(v);
+    if (nvs_get_blob(h, "dc", v, &n) == ESP_OK && n == sizeof(v) && fabsf(v[0]) <= 512.0f && fabsf(v[1]) <= 512.0f) {
+        beacon_dc[0] = v[0];
+        beacon_dc[1] = v[1];
+        beacon_dc_saved = true;
+    }
+    nvs_close(h);
+}
+
+static bool beacon_dc_store(bool erase) {
+    nvs_handle_t h;
+    if (nvs_open("beacon", NVS_READWRITE, &h) != ESP_OK) return false;
+    const esp_err_t e = erase ? nvs_erase_key(h, "dc") : nvs_set_blob(h, "dc", beacon_dc, sizeof(beacon_dc));
+    const bool ok = (e == ESP_OK || (erase && e == ESP_ERR_NVS_NOT_FOUND)) && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}
+
+static void beacon_dc_say(void) {
+    say("BDC %.3f %.3f (%s)\r\n", (double)beacon_dc[0], (double)beacon_dc[1], beacon_dc_saved ? "saved" : "built-in");
+}
+
 /* Front panel: the settings (panel_cfg) choose frequency, level, symbol rate (8 MS/s / S, any S >= 16), PA, pilots, service name and
  * provider. The built-in loop is used as it is when pilots, name and provider are those of beacon.bin, else beacon_enc.c re-encodes it.
  * The loop runs in chunks of half the loop length: between two chunks (with interrupts still off) the GPIO interrupt status tells whether a
@@ -1052,18 +1097,26 @@ static bool host_seen;
  * The file's symbol rate is a little below 333 kBd: the symbol takes 484 instead of 480 cycles, and the 4 spare cycles absorb the
  * stall of the data buffer read (about 20 cycles, every 16 symbols). Code rate, pilots and service come from the file. */
 #include "esp_partition.h"
+#include "esp_app_desc.h"
+#ifndef CONFIG_DATV_BUILTIN_BEACON                                   /* Kconfig leaves a bool that is off undefined */
+#define CONFIG_DATV_BUILTIN_BEACON 0
+#endif
 #include "esp_rom_crc.h"
 #include "hal/spimem_flash_ll.h"
 #include "soc/spi_mem_struct.h"
 typedef struct {
     char magic[8];
     uint32_t version, nsym, baud, bytes, crc;                        /* bytes: the symbol data and VIDEO_TAIL bytes repeated past its end */
-    uint8_t pilots, modcod, pad[2];
+    uint8_t pilots, modcod, flags, pad;                              /* flags (version 3): bit 0 short FECFRAMEs */
     char service[32], provider[32];
+    uint32_t freq_khz;                                               /* version 3: frequency and DAC amplitude of the loop; 0: the panel's */
+    uint16_t amp, pad2;
 } video_hdr_t;
 #define VIDEO_HEADER 4096u
 #define VIDEO_TAIL 64u                                               /* one SPI1 read may run past the end of the loop */
-#define VIDEO_MODCOD 7u                                              /* QPSK 3/4: the only code rate of the beacon loop (benc_frame_syms) */
+#define VIDEO_MODCOD 7u                                              /* version 2: QPSK 3/4 only */
+#define VIDEO_SPARE 4u                                               /* cycles per symbol beyond S x 20 for the SPI1 buffer read */
+#define VIDEO_SHORT 1u                                               /* flags: short FECFRAMEs (version 3) */
 #define VIDEO_RING 512u                                              /* lutf.S: FLASH_RING_MASK + 1 */
 #define VIDEO_LEAD 256u                                              /* ring bytes filled ahead of the loop at the start */
 #define VIDEO_MPER 14u                                               /* copies A, B and 14 x N: 16 symbols = 4 bytes per word */
@@ -1077,8 +1130,18 @@ extern uint32_t lutf_run_p20(lutf_ctx_t *c);
 static const video_hdr_t *video;
 static uint32_t video_addr;                                          /* flash address of the partition */
 static bool video_checked;
+static esp_partition_mmap_handle_t video_map;                        /* kept while a valid video is mapped (VIDW unmaps it) */
 
 static uint32_t video_sper(uint32_t baud) { return (CPU_HZ + baud / 2u) / baud; }   /* cycles per symbol */
+/* PLFRAME of the video in QPSK, whatever frame size the built-in beacon has (benc_frame_syms follows the beacon): 360 slots
+ * normal, 90 short (version 3, flags bit 0) */
+static uint32_t video_frame_syms(const video_hdr_t *v) {
+    const uint32_t slots = (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? 90u : 360u;
+    return 90u + slots * 90u + (v->pilots ? 36u * ((slots - 1u) / 16u) : 0u);
+}
+/* Samples per symbol of the video loop: as many 20-cycle samples as leave VIDEO_SPARE cycles for lutf.S's SPI1 read
+ * (330.579 kBd: 484 cycles, S 24 as upstream; 40 kBd: 4000 cycles, S 199). Any rate with S >= 16 (up to ~333 kBd). */
+static uint32_t video_s(uint32_t baud) { return (video_sper(baud) - VIDEO_SPARE) / 20u; }
 
 static const video_hdr_t *video_find(void) {                        /* the mapped partition when it holds a valid video (checked once) */
     if (video_checked) return video;
@@ -1091,11 +1154,13 @@ static const video_hdr_t *video_find(void) {                        /* the mappe
         return NULL;
     }
     const video_hdr_t *v = map;
-    const uint32_t S = v->baud ? CPU_HZ / v->baud / 20u : 0, sper = v->baud ? video_sper(v->baud) : 0;
+    /* version 2 (upstream make_video.py: QPSK 3/4 normal frames, 330.579 kBd) or 3 (this fork: any QPSK code rate, short
+     * frames, any symbol rate the loop can do - S >= 16 samples of 20 cycles with VIDEO_SPARE cycles left) */
+    const uint32_t S = v->baud ? video_s(v->baud) : 0;
     const char *why = NULL;
-    if (memcmp(v->magic, "DATVVID1", 8) || v->version != 2) why = "none";
-    else if (S != 24u || sper <= 20u * S || sper > 20u * S + 16u || v->modcod != VIDEO_MODCOD || v->nsym == 0 ||
-             v->nsym % (2u * benc_frame_syms(v->pilots != 0)))
+    if (memcmp(v->magic, "DATVVID1", 8) || (v->version != 2 && v->version != 3)) why = "none";
+    else if (S < 16u || S > 232u || (v->version == 2 && v->modcod != VIDEO_MODCOD) || v->modcod < 1u || v->modcod > 11u ||
+             v->nsym == 0 || v->nsym % (2u * video_frame_syms(v)))
         why = "unsupported format";
     else if (v->bytes != v->nsym / 4u + VIDEO_TAIL || VIDEO_HEADER + v->bytes > part->size) why = "bad length";
     else if (esp_rom_crc32_le(0, (const uint8_t *)map + VIDEO_HEADER, v->bytes) != v->crc) why = "bad CRC";
@@ -1104,7 +1169,10 @@ static const video_hdr_t *video_find(void) {                        /* the mappe
         esp_partition_munmap(h);
         return NULL;
     }
-    say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd\r\n", v->service, v->provider, (unsigned long)v->nsym, (unsigned long)v->baud);
+    video_map = h;
+    say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd, MODCOD %u%s, S %lu, %lu kHz amp %u\r\n", v->service, v->provider, (unsigned long)v->nsym,
+        (unsigned long)v->baud, (unsigned)v->modcod, (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? " short" : "", (unsigned long)S,
+        (unsigned long)(v->version >= 3u ? v->freq_khz : 0u), (unsigned)(v->version >= 3u ? v->amp : 0u));
     static char line[20];
     snprintf(line, sizeof(line), "VIDEO %lus SR%lu", (unsigned long)((v->nsym + v->baud / 2u) / v->baud), (unsigned long)((v->baud + 500u) / 1000u));
     panel_video(line);
@@ -1154,7 +1222,10 @@ static int beacon_fail(const char *msg, void *a, void *b, void *c) {
 static int beacon_run(void) {
     const panel_cfg_t *p = &panel_cfg;
     const video_hdr_t *v = p->video ? video_find() : NULL;          /* the panel's source; the test card when there is no video */
-    const uint32_t baud = v ? v->baud : panel_sr_baud[p->sr], period = 20, S = CPU_HZ / baud / period;
+#if !CONFIG_DATV_BUILTIN_BEACON
+    if (!v) return beacon_fail("no loop", NULL, NULL, NULL);       /* web build: nothing without the operator's loop (VIDW) */
+#endif
+    const uint32_t baud = v ? v->baud : panel_sr_baud[p->sr], period = 20, S = v ? video_s(baud) : CPU_HZ / baud / period;
     uint8_t *loop;
     uint32_t nsym, chunk;
     lutf_ctx_t fx;
@@ -1165,7 +1236,7 @@ static int beacon_run(void) {
         loop = malloc(VIDEO_RING);
         if (!loop) return beacon_fail("no memory", NULL, NULL, NULL);
         nsym = v->nsym;
-        chunk = 4u * benc_frame_syms(v->pilots != 0);                /* 4 PLFRAMEs (0.4 s): the boundaries stay in the LDPC parity */
+        chunk = 4u * video_frame_syms(v);                            /* 4 PLFRAMEs: the boundaries stay in the LDPC parity */
     } else {
         const bool builtin = p->pilots == BEACON_PILOTS && !strcmp(p->service, BEACON_SERVICE) && !strcmp(p->provider, BEACON_PROVIDER);
         const size_t bytes = (size_t)(beacon_bin_end - beacon_bin_start);
@@ -1180,9 +1251,13 @@ static int beacon_run(void) {
     int32_t *T = malloc(lutt_bytes(S));
     float *hb = malloc(8 * S * sizeof(float));
     if (!T || !hb) return beacon_fail("no memory", loop, T, hb);
-    lut_build_t(T, S, 0, 0.35f, (float)panel_amp(), 0.0f, 0.0f, 1.0f, 0.0f, hb);
+    /* a version 3 loop carries its own frequency and level (set on the phone with it); else the panel's */
+    const bool own = v && v->version >= 3u;
+    const uint32_t fkhz = own && v->freq_khz >= TX_FMIN_KHZ && v->freq_khz <= TX_FMAX_KHZ ? v->freq_khz : p->fkhz;
+    const float amp = own && v->amp >= 1u && v->amp <= 480u ? (float)v->amp : (float)panel_amp();
+    lut_build_t(T, S, 0, 0.35f, amp, beacon_dc[0], beacon_dc[1], BEACON_IQ_GAIN, BEACON_IQ_PHASE, hb);
     free(hb);
-    if (!tune(p->fkhz)) return beacon_fail("frequency", loop, T, NULL);
+    if (!tune(fkhz)) return beacon_fail("frequency", loop, T, NULL);
     const sample_clock_t symbol_clock = sample_clock_init(CPU_HZ, baud);
     for (uint32_t g = 0; g < 4; ++g) c->t[g] = T + g * S * 16;
     c->ring = loop;
@@ -1260,6 +1335,93 @@ static int beacon_run(void) {
     return why;
 }
 
+/* ------------------------------------------------------------ VIDW: writing the video partition from USB (this fork)
+ * VIDW BEGIN bytes crc32   erase what the file needs (4 KB sectors); OK VIDW BEGIN bytes
+ * VIDW DATA offset n crc32 then exactly n raw bytes (n <= 4096); written at offset; OK VIDW DATA offset
+ * VIDW END                 CRC32 of the written bytes against BEGIN's, the partition mapped afresh and checked: OK VIDW END + the
+ *                          VIDEO line, or ERR; the beacon / video starts again
+ * VIDW ERASE               erase the header: the test card again
+ * So that a phone can store a stand-alone loop (ESP32-ATV's TX screen, tx/make_flash_loop.py) without a reflash. */
+static uint32_t vidw_total, vidw_crc, vidw_written;
+static bool vidw_open;
+
+static const esp_partition_t *vidw_part(void) {
+    return esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "video");
+}
+
+static void video_forget(void) {                                     /* the next video_find() maps and checks the partition again */
+    if (video) esp_partition_munmap(video_map);
+    video = NULL;
+    video_checked = false;
+    panel_video(NULL);
+}
+
+static bool usb_read_exact(uint8_t *b, uint32_t n, int64_t timeout_us) {
+    const int64_t end = esp_timer_get_time() + timeout_us;
+    uint32_t got = 0;
+    while (got < n) {
+        const int k = usb_serial_jtag_ll_read_rxfifo(b + got, n - got);
+        if (k > 0) got += (uint32_t)k;
+        else if (esp_timer_get_time() > end) return false;
+    }
+    return true;
+}
+
+static void vidw_do(const char *arg, uint8_t *buf);
+
+static void vidw(const char *arg) {
+    /* a 4 KB buffer from the heap for the command only: static data must stay below the RF DAC bank (rf_bank_guard.ld) */
+    uint8_t *buf = malloc(4096);
+    if (!buf) { say("ERR VIDW no memory\r\n"); return; }
+    vidw_do(arg, buf);
+    free(buf);
+}
+
+static void vidw_do(const char *arg, uint8_t *buf) {
+    const esp_partition_t *part = vidw_part();
+    if (!part) { say("ERR VIDW no video partition\r\n"); return; }
+    unsigned long a1 = 0, a2 = 0, a3 = 0;
+    if (!strncmp(arg, "BEGIN ", 6) && sscanf(arg + 6, "%lu %lx", &a1, &a2) == 2) {
+        if (a1 < VIDEO_HEADER || a1 > part->size) { say("ERR VIDW %lu bytes do not fit %lu\r\n", a1, (unsigned long)part->size); return; }
+        video_forget();
+        const uint32_t erase = ((uint32_t)a1 + 4095u) & ~4095u;
+        if (esp_partition_erase_range(part, 0, erase) != ESP_OK) { say("ERR VIDW erase\r\n"); return; }
+        vidw_total = (uint32_t)a1; vidw_crc = (uint32_t)a2; vidw_written = 0; vidw_open = true;
+        say("OK VIDW BEGIN %lu\r\n", (unsigned long)vidw_total);
+    } else if (!strncmp(arg, "DATA ", 5) && sscanf(arg + 5, "%lu %lu %lx", &a1, &a2, &a3) == 3) {
+        if (!vidw_open || a2 == 0 || a2 > 4096u || a1 + a2 > vidw_total) { say("ERR VIDW DATA out of order\r\n"); return; }
+        if (!usb_read_exact(buf, (uint32_t)a2, 2000000)) { say("ERR VIDW DATA timeout\r\n"); return; }
+        if (esp_rom_crc32_le(0, buf, (uint32_t)a2) != (uint32_t)a3) { say("ERR VIDW DATA crc %lu\r\n", a1); return; }
+        if (esp_partition_write(part, (uint32_t)a1, buf, (uint32_t)a2) != ESP_OK) { say("ERR VIDW write %lu\r\n", a1); return; }
+        vidw_written += (uint32_t)a2;
+        say("OK VIDW DATA %lu\r\n", a1);
+    } else if (!strcmp(arg, "END")) {
+        if (!vidw_open) { say("ERR VIDW END without BEGIN\r\n"); return; }
+        vidw_open = false;
+        uint32_t crc = 0;
+        for (uint32_t o = 0; o < vidw_total; o += 4096u) {
+            const uint32_t n = vidw_total - o < 4096u ? vidw_total - o : 4096u;
+            if (esp_partition_read(part, o, buf, n) != ESP_OK) { say("ERR VIDW read\r\n"); return; }
+            crc = esp_rom_crc32_le(crc, buf, n);
+        }
+        if (crc != vidw_crc) { say("ERR VIDW crc %08lx, expected %08lx (%lu bytes written)\r\n", (unsigned long)crc, (unsigned long)vidw_crc, (unsigned long)vidw_written); return; }
+        video_forget();
+        const video_hdr_t *v = video_find();                         /* says VIDEO ... or VIDEO <why not> */
+        say("%s VIDW END %08lx\r\n", v ? "OK" : "ERR", (unsigned long)crc);
+        host_seen = false;                                           /* a beacon command: the loop starts now */
+        beacon_restart = true;
+    } else if (!strcmp(arg, "ERASE")) {
+        video_forget();
+        if (esp_partition_erase_range(part, 0, 4096) != ESP_OK) { say("ERR VIDW erase\r\n"); return; }
+        video_find();
+        say("OK VIDW ERASE\r\n");
+        host_seen = false;
+        beacon_restart = true;
+    } else {
+        say("ERR VIDW BEGIN bytes crc32hex | DATA offset n crc32hex + n bytes | END | ERASE\r\n");
+    }
+}
+
 /* ------------------------------------------------------------ commands */
 
 static void handle(char *line) {
@@ -1267,6 +1429,13 @@ static void handle(char *line) {
     host_seen = true;                                                /* a valid command: the host has taken over */
     if (!strcmp(line, "INFO")) {
         say("ESP32DATV 1 PA_GPIO %u\r\n", (unsigned)PA_ENABLE_GPIO);
+        say("FW %s%s\r\n", esp_app_get_description()->version, CONFIG_DATV_BUILTIN_BEACON ? "" : " no-builtin-beacon");
+        say("BEACON %lu Bd QPSK %s %s frames x %lu, pilots %u\r\n", (unsigned long)BEACON_BAUD, BEACON_FEC,
+            BEACON_FRAME_SHORT ? "short" : "normal", (unsigned long)benc_frames(), (unsigned)BEACON_PILOTS);
+        const video_hdr_t *v = video_find();
+        if (v) say("VIDW 1 VIDEO %.31s %lu Bd MODCOD %u%s %lu symbols\r\n", v->service, (unsigned long)v->baud, (unsigned)v->modcod,
+                   (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? " short" : "", (unsigned long)v->nsym);
+        else say("VIDW 1 VIDEO none\r\n");
     } else if (!strcmp(line, "PA")) {
         say("PA GPIO %u ARMED %u LEVEL %u\r\n", (unsigned)PA_ENABLE_GPIO,
             (unsigned)pa_requested, (unsigned)gpio_get_level(PA_ENABLE_GPIO));
@@ -1299,11 +1468,40 @@ static void handle(char *line) {
         panel_show("PC TX", pa_enable, fk, mod, sr, "Service set by PC", NULL);
         tx_qpsk_lut(fk, (uint32_t)baud, (uint32_t)sps, (int32_t)amp, (uint32_t)secs, (int32_t)ifm, (int32_t)tgt, (int32_t)dc4i, (int32_t)dc4q, (int32_t)gq, (int32_t)phim, psk8, a16, (uint32_t)gam, a32, (uint32_t)gam2, pa_enable);
         panel_show("STANDBY", false, fk, mod, sr, "PC on USB", "Any key: local");
+    } else if (!strncmp(line, "VIDW ", 5)) {
+        vidw(line + 5);
+    } else if (!strncmp(line, "BDC", 3) && (line[3] == 0 || line[3] == ' ')) {
+        /* BDC: show; BDC i q: set the DC correction [DAC codes] and restart the beacon; BDC SAVE / BDC RESET: keep it in NVS /
+         * go back to the built-in values. A beacon command: the beacon keeps (or starts) running. */
+        host_seen = false;
+        const char *arg = line + 3;
+        while (*arg == ' ') ++arg;
+        if (!strcmp(arg, "SAVE")) {
+            if (beacon_dc_store(false)) beacon_dc_saved = true;
+            else say("ERR BDC SAVE\r\n");
+        } else if (!strcmp(arg, "RESET")) {
+            if (!beacon_dc_store(true)) say("ERR BDC RESET\r\n");
+            beacon_dc[0] = BEACON_DC_I;
+            beacon_dc[1] = BEACON_DC_Q;
+            beacon_dc_saved = false;
+        } else if (*arg) {
+            char *e1, *e2;
+            const float i = strtof(arg, &e1), q = strtof(e1, &e2);
+            if (e1 == arg || e2 == e1 || *e2 || fabsf(i) > 512.0f || fabsf(q) > 512.0f) {
+                say("ERR BDC i q (DAC codes, -512..512) | SAVE | RESET\r\n");
+                return;
+            }
+            beacon_dc[0] = i;
+            beacon_dc[1] = q;
+            beacon_dc_saved = false;
+        }
+        beacon_dc_say();
+        beacon_restart = true;
     } else {
         host_seen = seen;                                            /* e.g. a modem probe: does not stop the beacon for good */
         pa_requested = false;
         pa_set(false);
-        say("ERR ? (commands: INFO, HEAP, PA, QPSKT, PSK8T, A16T, A32T)\r\n");
+        say("ERR ? (commands: INFO, HEAP, PA, BDC, VIDW, QPSKT, PSK8T, A16T, A32T)\r\n");
     }
 }
 
@@ -1315,13 +1513,20 @@ void app_main(void) {
         e = nvs_flash_init();
     }
     ESP_ERROR_CHECK(e);
+    uint8_t sr0 = UINT8_MAX;                     /* the built-in symbol rate (beacon_cfg.h) must be one of the panel's */
+    for (uint8_t i = 0; i < panel_nsr; ++i)
+        if (panel_sr_baud[i] == BEACON_BAUD) sr0 = i;
+    if (sr0 == UINT8_MAX) {
+        say("ERR beacon: BEACON_BAUD %lu is not in panel_sr_baud\r\n", (unsigned long)BEACON_BAUD);
+        abort();
+    }
     const panel_cfg_t defaults = {
-        .tx = 1, .pa = BEACON_PA, .pilots = BEACON_PILOTS, .sr = 2, .fkhz = BEACON_FREQ_KHZ,
+        .tx = 1, .pa = BEACON_PA, .pilots = BEACON_PILOTS, .sr = sr0, .fkhz = BEACON_FREQ_KHZ,
         .level_db = (int8_t)lroundf(20.0f * log10f(BEACON_AMP / 300.0f)), .service = BEACON_SERVICE, .provider = BEACON_PROVIDER,
         .video = 1,
     };
-    _Static_assert(BEACON_BAUD == 333000u, "panel_sr_baud[2] is the built-in symbol rate");
     panel_init(&defaults);                       /* settings saved by the front panel replace the defaults */
+    beacon_dc_load();
     video_find();                                /* the panel shows whether the flash holds a video */
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -1364,6 +1569,11 @@ void app_main(void) {
             line[used] = 0;
             used = 0;
             if (line[0]) handle(line);
+            if (beacon_restart) {                /* BDC: the beacon again, now */
+                beacon_restart = false;
+                failed = false;
+                resume_at = 0;
+            }
             continue;
         }
         switch (panel_poll(host_seen)) {

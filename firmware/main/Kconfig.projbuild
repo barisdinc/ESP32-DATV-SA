@@ -1,0 +1,28 @@
+menu "ESP32-DATV-SA"
+
+choice DATV_BOARD
+    prompt "Board (front panel wiring)"
+    default DATV_BOARD_SUPERMINI
+    help
+        Pins of the front panel OLED. The encoder (GPIO5/6/7), the buttons (GPIO10/20/21) and PA enable (GPIO3) are the same
+        on both boards.
+
+config DATV_BOARD_SUPERMINI
+    bool "ESP32-C3 SuperMini (OLED SDA GPIO0, SCL GPIO1)"
+
+config DATV_BOARD_XIAO_C3
+    bool "Seeed XIAO ESP32-C3 (OLED SDA GPIO4 = D2, SCL GPIO2 = D0)"
+    help
+        The XIAO does not bring out GPIO0/1. SCL goes to the strapping pin GPIO2, which the bus pull-ups keep high at reset.
+
+endchoice
+
+config DATV_BUILTIN_BEACON
+    bool "Transmit the built-in test card when the flash holds no loop"
+    default y
+    help
+        Without it the firmware transmits nothing until a loop is stored in the "video" partition (VIDW, from ESP32-ATV's app
+        or tx/c3_vidw.py): a firmware for everyone (ESP32-ATV's web build) must not send a test card without the operator's
+        callsign.
+
+endmenu

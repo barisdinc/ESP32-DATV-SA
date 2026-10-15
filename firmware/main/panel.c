@@ -21,8 +21,10 @@
 #define ENC_STEPS   4                                            /* quadrature steps per detent: 4 (most EC11) or 2 */
 #define ENC_DIR     1                                            /* -1 if the encoder turns the wrong way */
 
-const uint32_t panel_sr_baud[] = {125000, 250000, 333000, 400000, 500000};    /* 8 MS/s: 64, 32, 24, 20, 16 samples per symbol */
+/* 8 MS/s: 200, 160, 120, 80, 64, 32, 24, 20, 16 samples per symbol (160 MHz / baud must round down to 20 x S) */
+const uint32_t panel_sr_baud[] = {40000, 50000, 66666, 100000, 125000, 250000, 333000, 400000, 500000};
 #define NSR ((int)(sizeof(panel_sr_baud) / sizeof(panel_sr_baud[0])))
+const uint8_t panel_nsr = NSR;
 
 static const char CHARSET[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_./+()";   /* space first: deletes */
 static const uint32_t FSTEP[] = {10000, 1000, 100, 10, 1};       /* kHz per frequency cursor position */
@@ -241,7 +243,11 @@ void panel_draw(void) {
     snprintf(b, sizeof(b), "%4lu.%03lu", (unsigned long)(c->fkhz / 1000), (unsigned long)(c->fkhz % 1000));
     oled_text(&f, 0, 2, 2, b);
     oled_text(&f, OLED_W - 18, 3, 1, "MHz");
-    const char *src = c->video ? (ui.video ? ui.video : "VIDEO none") : "TEST CARD " BEACON_FEC;
+#ifndef BEACON_MODE_TEXT                                         /* beacon_cfg.h from before short frames */
+#define BEACON_MODE_TEXT "TEST CARD " BEACON_FEC
+#endif
+    /* source: the video in the flash, or the test card with its mode ("S2 QPSK 3/4 SF" with short frames) */
+    const char *src = c->video ? (ui.video ? ui.video : "VIDEO none") : BEACON_MODE_TEXT;
     oled_text(&f, 0, 4, 1, ui.msg ? ui.msg : src);
     snprintf(b, sizeof(b), "%+ddB", c->level_db);
     oled_text(&f, 96, 4, 1, b);
