@@ -1124,6 +1124,7 @@ extern uint32_t lutf_run_p20(lutf_ctx_t *c);
 static const video_hdr_t *video;
 static uint32_t video_addr;                                          /* flash address of the partition */
 static bool video_checked;
+static esp_partition_mmap_handle_t video_map;                        /* kept while a valid video is mapped (VIDW unmaps it) */
 
 static uint32_t video_sper(uint32_t baud) { return (CPU_HZ + baud / 2u) / baud; }   /* cycles per symbol */
 /* PLFRAME of the video in QPSK, whatever frame size the built-in beacon has (benc_frame_syms follows the beacon): 360 slots
@@ -1162,6 +1163,7 @@ static const video_hdr_t *video_find(void) {                        /* the mappe
         esp_partition_munmap(h);
         return NULL;
     }
+    video_map = h;
     say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd, MODCOD %u%s, S %lu\r\n", v->service, v->provider, (unsigned long)v->nsym,
         (unsigned long)v->baud, (unsigned)v->modcod, (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? " short" : "", (unsigned long)S);
     static char line[20];
@@ -1319,6 +1321,93 @@ static int beacon_run(void) {
     return why;
 }
 
+/* ------------------------------------------------------------ VIDW: writing the video partition from USB (this fork)
+ * VIDW BEGIN bytes crc32   erase what the file needs (4 KB sectors); OK VIDW BEGIN bytes
+ * VIDW DATA offset n crc32 then exactly n raw bytes (n <= 4096); written at offset; OK VIDW DATA offset
+ * VIDW END                 CRC32 of the written bytes against BEGIN's, the partition mapped afresh and checked: OK VIDW END + the
+ *                          VIDEO line, or ERR; the beacon / video starts again
+ * VIDW ERASE               erase the header: the test card again
+ * So that a phone can store a stand-alone loop (ESP32-ATV's TX screen, tx/make_flash_loop.py) without a reflash. */
+static uint32_t vidw_total, vidw_crc, vidw_written;
+static bool vidw_open;
+
+static const esp_partition_t *vidw_part(void) {
+    return esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "video");
+}
+
+static void video_forget(void) {                                     /* the next video_find() maps and checks the partition again */
+    if (video) esp_partition_munmap(video_map);
+    video = NULL;
+    video_checked = false;
+    panel_video(NULL);
+}
+
+static bool usb_read_exact(uint8_t *b, uint32_t n, int64_t timeout_us) {
+    const int64_t end = esp_timer_get_time() + timeout_us;
+    uint32_t got = 0;
+    while (got < n) {
+        const int k = usb_serial_jtag_ll_read_rxfifo(b + got, n - got);
+        if (k > 0) got += (uint32_t)k;
+        else if (esp_timer_get_time() > end) return false;
+    }
+    return true;
+}
+
+static void vidw_do(const char *arg, uint8_t *buf);
+
+static void vidw(const char *arg) {
+    /* a 4 KB buffer from the heap for the command only: static data must stay below the RF DAC bank (rf_bank_guard.ld) */
+    uint8_t *buf = malloc(4096);
+    if (!buf) { say("ERR VIDW no memory\r\n"); return; }
+    vidw_do(arg, buf);
+    free(buf);
+}
+
+static void vidw_do(const char *arg, uint8_t *buf) {
+    const esp_partition_t *part = vidw_part();
+    if (!part) { say("ERR VIDW no video partition\r\n"); return; }
+    unsigned long a1 = 0, a2 = 0, a3 = 0;
+    if (!strncmp(arg, "BEGIN ", 6) && sscanf(arg + 6, "%lu %lx", &a1, &a2) == 2) {
+        if (a1 < VIDEO_HEADER || a1 > part->size) { say("ERR VIDW %lu bytes do not fit %lu\r\n", a1, (unsigned long)part->size); return; }
+        video_forget();
+        const uint32_t erase = ((uint32_t)a1 + 4095u) & ~4095u;
+        if (esp_partition_erase_range(part, 0, erase) != ESP_OK) { say("ERR VIDW erase\r\n"); return; }
+        vidw_total = (uint32_t)a1; vidw_crc = (uint32_t)a2; vidw_written = 0; vidw_open = true;
+        say("OK VIDW BEGIN %lu\r\n", (unsigned long)vidw_total);
+    } else if (!strncmp(arg, "DATA ", 5) && sscanf(arg + 5, "%lu %lu %lx", &a1, &a2, &a3) == 3) {
+        if (!vidw_open || a2 == 0 || a2 > 4096u || a1 + a2 > vidw_total) { say("ERR VIDW DATA out of order\r\n"); return; }
+        if (!usb_read_exact(buf, (uint32_t)a2, 2000000)) { say("ERR VIDW DATA timeout\r\n"); return; }
+        if (esp_rom_crc32_le(0, buf, (uint32_t)a2) != (uint32_t)a3) { say("ERR VIDW DATA crc %lu\r\n", a1); return; }
+        if (esp_partition_write(part, (uint32_t)a1, buf, (uint32_t)a2) != ESP_OK) { say("ERR VIDW write %lu\r\n", a1); return; }
+        vidw_written += (uint32_t)a2;
+        say("OK VIDW DATA %lu\r\n", a1);
+    } else if (!strcmp(arg, "END")) {
+        if (!vidw_open) { say("ERR VIDW END without BEGIN\r\n"); return; }
+        vidw_open = false;
+        uint32_t crc = 0;
+        for (uint32_t o = 0; o < vidw_total; o += 4096u) {
+            const uint32_t n = vidw_total - o < 4096u ? vidw_total - o : 4096u;
+            if (esp_partition_read(part, o, buf, n) != ESP_OK) { say("ERR VIDW read\r\n"); return; }
+            crc = esp_rom_crc32_le(crc, buf, n);
+        }
+        if (crc != vidw_crc) { say("ERR VIDW crc %08lx, expected %08lx (%lu bytes written)\r\n", (unsigned long)crc, (unsigned long)vidw_crc, (unsigned long)vidw_written); return; }
+        video_forget();
+        const video_hdr_t *v = video_find();                         /* says VIDEO ... or VIDEO <why not> */
+        say("%s VIDW END %08lx\r\n", v ? "OK" : "ERR", (unsigned long)crc);
+        host_seen = false;                                           /* a beacon command: the loop starts now */
+        beacon_restart = true;
+    } else if (!strcmp(arg, "ERASE")) {
+        video_forget();
+        if (esp_partition_erase_range(part, 0, 4096) != ESP_OK) { say("ERR VIDW erase\r\n"); return; }
+        video_find();
+        say("OK VIDW ERASE\r\n");
+        host_seen = false;
+        beacon_restart = true;
+    } else {
+        say("ERR VIDW BEGIN bytes crc32hex | DATA offset n crc32hex + n bytes | END | ERASE\r\n");
+    }
+}
+
 /* ------------------------------------------------------------ commands */
 
 static void handle(char *line) {
@@ -1328,6 +1417,10 @@ static void handle(char *line) {
         say("ESP32DATV 1 PA_GPIO %u\r\n", (unsigned)PA_ENABLE_GPIO);
         say("BEACON %lu Bd QPSK %s %s frames x %lu, pilots %u\r\n", (unsigned long)BEACON_BAUD, BEACON_FEC,
             BEACON_FRAME_SHORT ? "short" : "normal", (unsigned long)benc_frames(), (unsigned)BEACON_PILOTS);
+        const video_hdr_t *v = video_find();
+        if (v) say("VIDW 1 VIDEO %.31s %lu Bd MODCOD %u%s %lu symbols\r\n", v->service, (unsigned long)v->baud, (unsigned)v->modcod,
+                   (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? " short" : "", (unsigned long)v->nsym);
+        else say("VIDW 1 VIDEO none\r\n");
     } else if (!strcmp(line, "PA")) {
         say("PA GPIO %u ARMED %u LEVEL %u\r\n", (unsigned)PA_ENABLE_GPIO,
             (unsigned)pa_requested, (unsigned)gpio_get_level(PA_ENABLE_GPIO));
@@ -1360,6 +1453,8 @@ static void handle(char *line) {
         panel_show("PC TX", pa_enable, fk, mod, sr, "Service set by PC", NULL);
         tx_qpsk_lut(fk, (uint32_t)baud, (uint32_t)sps, (int32_t)amp, (uint32_t)secs, (int32_t)ifm, (int32_t)tgt, (int32_t)dc4i, (int32_t)dc4q, (int32_t)gq, (int32_t)phim, psk8, a16, (uint32_t)gam, a32, (uint32_t)gam2, pa_enable);
         panel_show("STANDBY", false, fk, mod, sr, "PC on USB", "Any key: local");
+    } else if (!strncmp(line, "VIDW ", 5)) {
+        vidw(line + 5);
     } else if (!strncmp(line, "BDC", 3) && (line[3] == 0 || line[3] == ' ')) {
         /* BDC: show; BDC i q: set the DC correction [DAC codes] and restart the beacon; BDC SAVE / BDC RESET: keep it in NVS /
          * go back to the built-in values. A beacon command: the beacon keeps (or starts) running. */
@@ -1391,7 +1486,7 @@ static void handle(char *line) {
         host_seen = seen;                                            /* e.g. a modem probe: does not stop the beacon for good */
         pa_requested = false;
         pa_set(false);
-        say("ERR ? (commands: INFO, HEAP, PA, BDC, QPSKT, PSK8T, A16T, A32T)\r\n");
+        say("ERR ? (commands: INFO, HEAP, PA, BDC, VIDW, QPSKT, PSK8T, A16T, A32T)\r\n");
     }
 }
 
