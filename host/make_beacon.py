@@ -361,7 +361,7 @@ def main():
 #define BEACON_PILOTS     {int(pilots)}
 #define BEACON_FRAME_SHORT {int(a.frame == "short")}
 #define BEACON_PLFRAMES   {a.frames}u
-#define BEACON_MODE_TEXT  {c_str(("S2 QPSK " + a.fec + " SF") if a.frame == "short" else ("DVB-S2 QPSK " + a.fec))}   /* front panel: SF = short frames */
+#define BEACON_MODE_TEXT  {c_str("TEST CARD " + a.fec + (" SF" if a.frame == "short" else ""))}   /* front panel source line: SF = short frames */
 #define BEACON_SERVICE    {c_str(a.service_name)}
 #define BEACON_PROVIDER   {c_str(a.service_provider)}
 #define BEACON_DC_I       {dc_i:.3f}f   /* DC correction [DAC codes]: nulls the carrier leakage; the BDC command changes it at run time */
