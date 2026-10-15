@@ -53,6 +53,7 @@ front panel you can change frequency, level, symbol rate and the names on the de
 Instead of the test card the board can loop a video of up to about 35 seconds stored in its flash at **`0x110000`**;
 the video can be changed without changing the firmware. How to prepare the video and write it with esptool-js
 (together with the firmware, or the video alone): **[Storing and playing video from internal flash](VIDEO.md)**.
+The video file can be made in the browser: **[video converter](https://barisdinc.github.io/ESP32-DATV-SA/converter/)**.
 
 ## If something does not work
 
@@ -118,6 +119,7 @@ Yüklemeden sonra kart, elektrik verildiği anda kendi kendine bir DVB-S2 test y
 Kart, test yayını yerine flash belleğinde **`0x110000`** adresinde saklanan, en fazla ~35 saniyelik bir videoyu
 döngüde yayınlayabilir; video firmware değişmeden değiştirilebilir. Videonun nasıl hazırlanacağı ve esptool-js ile
 nasıl yükleneceği (firmware ile birlikte ya da yalnızca video): **[Dahili flash'tan video saklama ve yayınlama](VIDEO.md#türkçe)**.
+Video dosyası tarayıcıda hazırlanabilir: **[video dönüştürücü](https://barisdinc.github.io/ESP32-DATV-SA/converter/)**.
 
 ### Sorun giderme
 

@@ -27,10 +27,10 @@ The work has three parts:
 
 ## 1. Prepare the video
 
-**In the browser:** [`docs/converter/`](converter/) is a web page that does the same as `make_video.py` below, with
-nothing to install (FFmpeg runs in the browser as WebAssembly; the file is not uploaded). Open it from a web server, e.g.
-`python3 -m http.server -d docs 8000` in the repository and then <http://localhost:8000/converter/>: choose the
-file, the start and the length, press *Convert* and download `…_video.bin`. Then continue with section 2 or 3.
+**In the browser:** the **[video converter](https://barisdinc.github.io/ESP32-DATV-SA/converter/)** page does the same as `make_video.py` below, with nothing to
+install (FFmpeg runs in the browser as WebAssembly; the file is not uploaded). Choose the file, the start and the
+length, press *Convert* and download `…_video.bin`. (Offline: `python3 -m http.server -d docs 8000` in the repository,
+then <http://localhost:8000/converter/>.) Then continue with section 2 or 3.
 
 **On the command line:** this step needs a computer (Windows, macOS or Linux) with **Python 3** and **FFmpeg**. It is done once per
 video; writing it to the board later needs only a web browser.
@@ -207,10 +207,10 @@ değiştirebilir, firmware'i de videoyu kaybetmeden güncelleyebilirsiniz.
 
 ### 1. Videoyu hazırlamak
 
-**Tarayıcıda:** [`docs/converter/`](converter/) aşağıdaki `make_video.py` ile aynı işi yapan, kurulum gerektirmeyen bir web
-sayfasıdır (FFmpeg tarayıcıda WebAssembly olarak çalışır; dosya hiçbir yere yüklenmez). Bir web sunucusundan açın, ör.
-depoda `python3 -m http.server -d docs 8000` ve ardından <http://localhost:8000/converter/>: dosyayı, başlangıcı ve
-uzunluğu seçin, *Dönüştür*'e basın ve `…_video.bin`'i indirin. Sonra 2. ya da 3. bölümle devam edin.
+**Tarayıcıda:** **[video dönüştürücü](https://barisdinc.github.io/ESP32-DATV-SA/converter/)** sayfası aşağıdaki `make_video.py` ile aynı işi kurulum gerektirmeden
+yapar (FFmpeg tarayıcıda WebAssembly olarak çalışır; dosya hiçbir yere yüklenmez). Dosyayı, başlangıcı ve uzunluğu
+seçin, *Dönüştür*'e basın ve `…_video.bin`'i indirin. (İnternetsiz: depoda `python3 -m http.server -d docs 8000`,
+ardından <http://localhost:8000/converter/>.) Sonra 2. ya da 3. bölümle devam edin.
 
 **Komut satırında:** bu adım için **Python 3** ve **FFmpeg** kurulu bir bilgisayar (Windows, macOS veya Linux) gerekir. Her video
 için bir kez yapılır; karta yazmak için daha sonra yalnızca web tarayıcısı yeterlidir.

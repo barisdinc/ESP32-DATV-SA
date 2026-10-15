@@ -20,8 +20,9 @@ takes over (see [Stand-alone beacon](#stand-alone-beacon)).
 > *Hiçbir şeyle uğraşmadan sadece ESP32-C3'ünüze firmware yüklemek istiyorsanız
 > [bu rehberi](docs/FLASHING.md#türkçe) takip edin.*
 >
-> **Your own video instead of the test card:** [docs/VIDEO.md](docs/VIDEO.md) — prepare a clip on the PC and
-> write it with the same web flasher. *Test yayını yerine kendi videonuz: [bu rehber](docs/VIDEO.md#türkçe).*
+> **Your own video instead of the test card:** [docs/VIDEO.md](docs/VIDEO.md) — convert a clip in the browser with the
+> **[video converter](https://barisdinc.github.io/ESP32-DATV-SA/converter/)** and write it with the same web flasher. *Test yayını yerine kendi videonuz:
+> [bu rehber](docs/VIDEO.md#türkçe), [video dönüştürücü](https://barisdinc.github.io/ESP32-DATV-SA/converter/).*
 
 An optional [front panel](#front-panel) (OLED, rotary encoder, three buttons) sets frequency, level,
 symbol rate, pilots, PA enable, service name and provider directly on the device.
