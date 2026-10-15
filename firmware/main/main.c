@@ -1103,12 +1103,14 @@ static void beacon_dc_say(void) {
 typedef struct {
     char magic[8];
     uint32_t version, nsym, baud, bytes, crc;                        /* bytes: the symbol data and VIDEO_TAIL bytes repeated past its end */
-    uint8_t pilots, modcod, pad[2];
+    uint8_t pilots, modcod, flags, pad;                              /* flags (version 3): bit 0 short FECFRAMEs */
     char service[32], provider[32];
 } video_hdr_t;
 #define VIDEO_HEADER 4096u
 #define VIDEO_TAIL 64u                                               /* one SPI1 read may run past the end of the loop */
-#define VIDEO_MODCOD 7u                                              /* QPSK 3/4: the only code rate of the beacon loop (benc_frame_syms) */
+#define VIDEO_MODCOD 7u                                              /* version 2: QPSK 3/4 only */
+#define VIDEO_SPARE 4u                                               /* cycles per symbol beyond S x 20 for the SPI1 buffer read */
+#define VIDEO_SHORT 1u                                               /* flags: short FECFRAMEs (version 3) */
 #define VIDEO_RING 512u                                              /* lutf.S: FLASH_RING_MASK + 1 */
 #define VIDEO_LEAD 256u                                              /* ring bytes filled ahead of the loop at the start */
 #define VIDEO_MPER 14u                                               /* copies A, B and 14 x N: 16 symbols = 4 bytes per word */
@@ -1124,9 +1126,15 @@ static uint32_t video_addr;                                          /* flash ad
 static bool video_checked;
 
 static uint32_t video_sper(uint32_t baud) { return (CPU_HZ + baud / 2u) / baud; }   /* cycles per symbol */
-/* PLFRAME of the video: normal QPSK frames (360 slots), whatever frame size the built-in beacon has (benc_frame_syms
- * follows the beacon, short frames in this fork) */
-static uint32_t video_frame_syms(bool pilots) { return 90u + 360u * 90u + (pilots ? 36u * ((360u - 1u) / 16u) : 0u); }
+/* PLFRAME of the video in QPSK, whatever frame size the built-in beacon has (benc_frame_syms follows the beacon): 360 slots
+ * normal, 90 short (version 3, flags bit 0) */
+static uint32_t video_frame_syms(const video_hdr_t *v) {
+    const uint32_t slots = (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? 90u : 360u;
+    return 90u + slots * 90u + (v->pilots ? 36u * ((slots - 1u) / 16u) : 0u);
+}
+/* Samples per symbol of the video loop: as many 20-cycle samples as leave VIDEO_SPARE cycles for lutf.S's SPI1 read
+ * (330.579 kBd: 484 cycles, S 24 as upstream; 40 kBd: 4000 cycles, S 199). Any rate with S >= 16 (up to ~333 kBd). */
+static uint32_t video_s(uint32_t baud) { return (video_sper(baud) - VIDEO_SPARE) / 20u; }
 
 static const video_hdr_t *video_find(void) {                        /* the mapped partition when it holds a valid video (checked once) */
     if (video_checked) return video;
@@ -1139,11 +1147,13 @@ static const video_hdr_t *video_find(void) {                        /* the mappe
         return NULL;
     }
     const video_hdr_t *v = map;
-    const uint32_t S = v->baud ? CPU_HZ / v->baud / 20u : 0, sper = v->baud ? video_sper(v->baud) : 0;
+    /* version 2 (upstream make_video.py: QPSK 3/4 normal frames, 330.579 kBd) or 3 (this fork: any QPSK code rate, short
+     * frames, any symbol rate the loop can do - S >= 16 samples of 20 cycles with VIDEO_SPARE cycles left) */
+    const uint32_t S = v->baud ? video_s(v->baud) : 0;
     const char *why = NULL;
-    if (memcmp(v->magic, "DATVVID1", 8) || v->version != 2) why = "none";
-    else if (S != 24u || sper <= 20u * S || sper > 20u * S + 16u || v->modcod != VIDEO_MODCOD || v->nsym == 0 ||
-             v->nsym % (2u * video_frame_syms(v->pilots != 0)))
+    if (memcmp(v->magic, "DATVVID1", 8) || (v->version != 2 && v->version != 3)) why = "none";
+    else if (S < 16u || S > 232u || (v->version == 2 && v->modcod != VIDEO_MODCOD) || v->modcod < 1u || v->modcod > 11u ||
+             v->nsym == 0 || v->nsym % (2u * video_frame_syms(v)))
         why = "unsupported format";
     else if (v->bytes != v->nsym / 4u + VIDEO_TAIL || VIDEO_HEADER + v->bytes > part->size) why = "bad length";
     else if (esp_rom_crc32_le(0, (const uint8_t *)map + VIDEO_HEADER, v->bytes) != v->crc) why = "bad CRC";
@@ -1152,7 +1162,8 @@ static const video_hdr_t *video_find(void) {                        /* the mappe
         esp_partition_munmap(h);
         return NULL;
     }
-    say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd\r\n", v->service, v->provider, (unsigned long)v->nsym, (unsigned long)v->baud);
+    say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd, MODCOD %u%s, S %lu\r\n", v->service, v->provider, (unsigned long)v->nsym,
+        (unsigned long)v->baud, (unsigned)v->modcod, (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? " short" : "", (unsigned long)S);
     static char line[20];
     snprintf(line, sizeof(line), "VIDEO %lus SR%lu", (unsigned long)((v->nsym + v->baud / 2u) / v->baud), (unsigned long)((v->baud + 500u) / 1000u));
     panel_video(line);
@@ -1202,7 +1213,7 @@ static int beacon_fail(const char *msg, void *a, void *b, void *c) {
 static int beacon_run(void) {
     const panel_cfg_t *p = &panel_cfg;
     const video_hdr_t *v = p->video ? video_find() : NULL;          /* the panel's source; the test card when there is no video */
-    const uint32_t baud = v ? v->baud : panel_sr_baud[p->sr], period = 20, S = CPU_HZ / baud / period;
+    const uint32_t baud = v ? v->baud : panel_sr_baud[p->sr], period = 20, S = v ? video_s(baud) : CPU_HZ / baud / period;
     uint8_t *loop;
     uint32_t nsym, chunk;
     lutf_ctx_t fx;
@@ -1213,7 +1224,7 @@ static int beacon_run(void) {
         loop = malloc(VIDEO_RING);
         if (!loop) return beacon_fail("no memory", NULL, NULL, NULL);
         nsym = v->nsym;
-        chunk = 4u * video_frame_syms(v->pilots != 0);               /* 4 PLFRAMEs (0.4 s): the boundaries stay in the LDPC parity */
+        chunk = 4u * video_frame_syms(v);                            /* 4 PLFRAMEs: the boundaries stay in the LDPC parity */
     } else {
         const bool builtin = p->pilots == BEACON_PILOTS && !strcmp(p->service, BEACON_SERVICE) && !strcmp(p->provider, BEACON_PROVIDER);
         const size_t bytes = (size_t)(beacon_bin_end - beacon_bin_start);
