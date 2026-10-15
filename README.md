@@ -258,6 +258,19 @@ the video (`VIDEO <length> SR331`; `VIDEO none` when the flash holds none, then 
 PA still apply, symbol rate, pilots and service come from the file. `esptool --chip esp32c3 erase-region 0x110000 0x1000`
 brings the test card back.
 
+**Header version 3, any rate.** Besides version 2 above, the firmware plays version 3 files: `flags` bit 0 = short
+FECFRAMEs, MODCOD 1..11 (QPSK 1/4..9/10), and after `provider` a `uint32 freq_khz` and `uint16 amp` (0 = the panel's).
+The symbol rate is free: the loop takes S = (160 MHz / baud − 4) / 20 samples per symbol, valid for S ≥ 16 (about
+40..333 kS/s); the real rate is 160 MHz / round(160 MHz / baud), e.g. 333 333 Bd for 333 kS/s, so give the receiver some
+symbol rate tolerance. The `VIDEO` line on start-up shows MODCOD, frame size and S.
+
+**Writing the loop over USB (`VIDW`).** Without esptool and without stopping the firmware:
+`VIDW BEGIN <bytes> <crc32hex>` erases what the file needs, then `VIDW DATA <offset> <n> <crc32hex>` followed by `n` raw
+bytes (n ≤ 4096, CRC per block) for each block, and `VIDW END` checks the CRC32 of the whole file and starts the loop at
+once. `VIDW ERASE` clears the header (test card again). `INFO` prints `FW <version>` and `VIDW 1 VIDEO …`, so a host can tell
+that the command exists and what the flash holds. With `CONFIG_DATV_BUILTIN_BEACON=n` (menuconfig) the firmware has no
+built-in test card and transmits nothing until a loop is stored, for a firmware handed out without a callsign.
+
 Run from the repository root with `.venv` activated. These examples loop the included
 Sintel trailer at 2370 MHz; FFmpeg adjusts the video and audio to the channel capacity.
 
