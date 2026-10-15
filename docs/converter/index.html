@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-DATV-SA video converter</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --fg: #1d2330; --muted: #5d6675; --line: #d8dde6; --accent: #1565c0; --ok: #2e7d32; --err: #c62828; --bg: #f6f8fb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--fg); background: var(--bg); }
+  main { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input[type=number], input[type=text], select { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  input[type=file] { font: inherit; }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--fg); font-size: 15px; margin-top: 26px; }
+  video { width: 100%; max-height: 300px; background: #000; border-radius: 6px; margin-top: 12px; display: none; }
+  button { font: inherit; padding: 9px 18px; border-radius: 6px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { background: #9aa6b8; cursor: default; }
+  .lang button { background: none; color: var(--accent); padding: 2px 6px; }
+  .lang button.on { font-weight: 700; text-decoration: underline; }
+  .info { color: var(--muted); font-size: 14px; margin-top: 12px; }
+  .warn { color: var(--err); }
+  progress { width: 100%; height: 14px; margin: 10px 0 4px; }
+  #status { font-size: 14px; }
+  #status.err { color: var(--err); }
+  #result { display: none; }
+  #result a.dl { display: inline-block; padding: 9px 18px; border-radius: 6px; background: var(--ok); color: #fff; text-decoration: none; margin: 4px 0 12px; }
+  ol { padding-left: 20px; margin: 0; }
+  li { margin-bottom: 6px; }
+  code { background: #eef1f6; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  details { margin-top: 10px; }
+  pre { max-height: 220px; overflow: auto; background: #0f1420; color: #cfd6e4; padding: 10px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+  footer { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ESP32-DATV-SA <span data-t="title"></span></h1>
+    <div class="lang"><button data-lang="en">EN</button><button data-lang="tr">TR</button></div>
+  </header>
+  <p class="sub" data-t="intro"></p>
+
+  <section class="card">
+    <h2 data-t="h_file"></h2>
+    <input type="file" id="file" accept="video/*,.mkv,.ts,.mov,.avi">
+    <video id="preview" controls muted></video>
+    <div class="info" id="fileinfo"></div>
+  </section>
+
+  <section class="card">
+    <h2 data-t="h_settings"></h2>
+    <div class="grid">
+      <div><label for="start" data-t="start"></label><input type="number" id="start" value="0" min="0" step="0.1"></div>
+      <div><label for="seconds" data-t="seconds"></label><input type="number" id="seconds" value="20" min="1" step="0.5"></div>
+      <div><label for="width" data-t="width"></label>
+        <select id="width"><option>320</option><option selected>480</option><option>640</option></select></div>
+      <div><label class="check"><input type="checkbox" id="pilots" checked> <span data-t="pilots"></span></label></div>
+      <div><label for="name" data-t="name"></label><input type="text" id="name" value="yATOLYE-TV" maxlength="31"></div>
+      <div><label for="provider" data-t="provider"></label><input type="text" id="provider" value="Technology Community" maxlength="31"></div>
+    </div>
+    <div class="info" id="estimate"></div>
+  </section>
+
+  <section class="card">
+    <button id="go" disabled data-t="convert"></button>
+    <progress id="bar" value="0" max="1" hidden></progress>
+    <div id="status"></div>
+    <details><summary data-t="log"></summary><pre id="log"></pre></details>
+  </section>
+
+  <section class="card" id="result">
+    <h2 data-t="h_done"></h2>
+    <a class="dl" id="download" download="video.bin"></a>
+    <div class="info" id="summary"></div>
+    <h2 style="margin-top:16px" data-t="h_flash"></h2>
+    <ol>
+      <li data-t="f1"></li>
+      <li data-t="f2"></li>
+      <li data-t="f3"></li>
+      <li data-t="f4"></li>
+      <li data-t="f5"></li>
+    </ol>
+  </section>
+
+  <footer data-t="footer"></footer>
+</main>
+
+<script type="module">
+import * as dv from "./datv_video.js";
+import { FFmpeg } from "./vendor/ffmpeg/index.js";
+
+const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/";
+const ESPTOOL = "https://espressif.github.io/esptool-js/";
+const GUIDE = "https://github.com/barisdinc/ESP32-DATV-SA/blob/main/docs/VIDEO.md";
+const baud = (dv.BAUD / 1000).toFixed(3);
+
+const T = {
+  en: {
+    title: "video converter",
+    intro: "Turns a part of a video file into the video image of the stand-alone transmitter (video.bin), which it plays in a loop from its flash. Everything runs in this browser: the file is not uploaded anywhere.",
+    h_file: "1. Video file", h_settings: "2. Settings", h_done: "Ready", h_flash: "Writing it to the transmitter",
+    start: "Start [s]", seconds: "Length of the loop [s]", width: "Picture width [px]", pilots: "Pilots (recommended)",
+    name: "Service name", provider: "Service provider", convert: "Convert", log: "FFmpeg log",
+    duration: (d, w, h) => `Length ${d.toFixed(1)} s, ${w}×${h}`,
+    estimate: (s, f, kb, pct, max) => `${s.toFixed(1)} s loop: ${f} DVB-S2 frames, ${kb} KB (${pct} % of the video partition). At most ${max.toFixed(0)} s fit.`,
+    tooLong: (max) => `Too long: at most ${max.toFixed(1)} s fit the video partition.`,
+    badName: "Service name and provider: Latin-1 letters only (no ı, ş, ğ, İ, Ş, Ğ).",
+    loading: "Loading FFmpeg (about 31 MB, only the first time)…",
+    encoding: (t, s) => `FFmpeg: encoding H.264 + MP2… ${t.toFixed(1)} / ${s.toFixed(1)} s`,
+    dvbs2: (n, m) => `DVB-S2 encoding: frame ${n} / ${m}`,
+    failed: "Failed: ", noVideo: "FFmpeg did not write any video. Is the start inside the file?",
+    download: (n) => `Download ${n}`,
+    summary: (p, nul, f, s, kb) => `${p} TS packets + ${nul} null packets = ${f} PLFRAMEs, ${s.toFixed(1)} s loop, ${kb} KB.`,
+    f1: `Open <a href="${ESPTOOL}" target="_blank">esptool-js</a> in Chrome or Edge, connect the transmitter and press <b>Connect</b>.`,
+    f2: `Flash Address <code>0x${dv.VIDEO_ADDR.toString(16)}</code>, choose the downloaded file, press <b>Program</b>. <b>Do not press Erase Flash</b> (it erases the firmware and the settings). Or: <code>esptool --chip esp32c3 write-flash 0x${dv.VIDEO_ADDR.toString(16)} video.bin</code>`,
+    f3: "Reset the transmitter. The front panel shows the service name; choose <b>VIDEO</b> as the source.",
+    f4: `Set the receiver to <b>${baud} kS/s</b> (not 333), QPSK 3/4.`,
+    f5: `More: <a href="${GUIDE}" target="_blank">storing and playing video from the internal flash</a>.`,
+    footer: "ESP32-DATV-SA · FFmpeg (libx264, GPL) through ffmpeg.wasm · DVB-S2 encoding checked bit for bit against host/make_video.py",
+  },
+  tr: {
+    title: "video dönüştürücü",
+    intro: "Bir video dosyasının bir bölümünü bağımsız vericinin flash'ından döngü halinde yayınladığı video imajına (video.bin) çevirir. Her şey bu tarayıcıda çalışır: dosya hiçbir yere yüklenmez.",
+    h_file: "1. Video dosyası", h_settings: "2. Ayarlar", h_done: "Hazır", h_flash: "Vericiye yazmak",
+    start: "Başlangıç [s]", seconds: "Döngü uzunluğu [s]", width: "Görüntü genişliği [px]", pilots: "Pilotlar (önerilir)",
+    name: "Servis adı", provider: "Servis sağlayıcı", convert: "Dönüştür", log: "FFmpeg kaydı",
+    duration: (d, w, h) => `Uzunluk ${d.toFixed(1)} s, ${w}×${h}`,
+    estimate: (s, f, kb, pct, max) => `${s.toFixed(1)} s döngü: ${f} DVB-S2 çerçevesi, ${kb} KB (video bölümünün %${pct}'i). En fazla ${max.toFixed(0)} s sığar.`,
+    tooLong: (max) => `Çok uzun: video bölümüne en fazla ${max.toFixed(1)} s sığar.`,
+    badName: "Servis adı ve sağlayıcı: yalnızca Latin-1 harfler (ı, ş, ğ, İ, Ş, Ğ olmaz).",
+    loading: "FFmpeg yükleniyor (yaklaşık 31 MB, yalnızca ilk sefer)…",
+    encoding: (t, s) => `FFmpeg: H.264 + MP2 kodlanıyor… ${t.toFixed(1)} / ${s.toFixed(1)} s`,
+    dvbs2: (n, m) => `DVB-S2 kodlama: çerçeve ${n} / ${m}`,
+    failed: "Hata: ", noVideo: "FFmpeg video üretmedi. Başlangıç dosyanın içinde mi?",
+    download: (n) => `${n} indir`,
+    summary: (p, nul, f, s, kb) => `${p} TS paketi + ${nul} boş paket = ${f} PLFRAME, ${s.toFixed(1)} s döngü, ${kb} KB.`,
+    f1: `Chrome veya Edge'de <a href="${ESPTOOL}" target="_blank">esptool-js</a>'i açın, vericiyi bağlayıp <b>Connect</b>'e basın.`,
+    f2: `Flash Address <code>0x${dv.VIDEO_ADDR.toString(16)}</code>, indirdiğiniz dosyayı seçin, <b>Program</b>'a basın. <b>Erase Flash'a basmayın</b> (firmware'i ve ayarları siler). Ya da: <code>esptool --chip esp32c3 write-flash 0x${dv.VIDEO_ADDR.toString(16)} video.bin</code>`,
+    f3: "Vericiyi yeniden başlatın. Ön panelde servis adı görünür; kaynak olarak <b>VIDEO</b>'yu seçin.",
+    f4: `Alıcıyı <b>${baud} kS/s</b>'ye ayarlayın (333 değil), QPSK 3/4.`,
+    f5: `Ayrıntılar: <a href="${GUIDE}#türkçe" target="_blank">dahili flash'tan video saklama ve yayınlama</a>.`,
+    footer: "ESP32-DATV-SA · FFmpeg (libx264, GPL), ffmpeg.wasm ile · DVB-S2 kodlama host/make_video.py ile bit bit karşılaştırıldı",
+  },
+};
+
+const $ = (id) => document.getElementById(id);
+let lang = localStorage.getItem("lang") || (navigator.language.startsWith("tr") ? "tr" : "en");
+let file = null, duration = 0, dims = [0, 0], ffmpeg = null, busy = false, lastResult = null;
+
+function t(key, ...a) { const v = T[lang][key]; return typeof v === "function" ? v(...a) : v; }
+
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-t]").forEach((e) => { e.innerHTML = t(e.dataset.t); });
+  document.querySelectorAll("[data-lang]").forEach((b) => b.classList.toggle("on", b.dataset.lang === lang));
+  if (duration) $("fileinfo").textContent = t("duration", duration, ...dims);
+  if (lastResult) showResult(lastResult);
+  update();
+}
+
+function settings() {
+  return {
+    start: Math.max(0, +$("start").value || 0), seconds: +$("seconds").value || 0, width: +$("width").value,
+    pilots: $("pilots").checked, name: $("name").value, provider: $("provider").value,
+  };
+}
+
+function update() {
+  const s = settings(), max = dv.maxSeconds(s.pilots), est = $("estimate");
+  let ok = !!file && s.seconds > 0;
+  est.classList.remove("warn");
+  if (s.seconds > max) {
+    est.textContent = t("tooLong", max); est.classList.add("warn"); ok = false;
+  } else if (!dv.checkName(s.name) || !dv.checkName(s.provider)) {
+    est.textContent = t("badName"); est.classList.add("warn"); ok = false;
+  } else if (s.seconds > 0) {
+    const f = dv.loopFrames(s.seconds, s.pilots), bytes = dv.imageSize(f, s.pilots);
+    est.textContent = t("estimate", f * dv.frameSymbols(s.pilots) / dv.BAUD, f, Math.round(bytes / 1024), Math.round(bytes / dv.VIDEO_SIZE * 100), max);
+  }
+  $("go").disabled = !ok || busy;
+}
+
+function status(text, err = false) { $("status").textContent = text; $("status").className = err ? "err" : ""; }
+function log(line) { const l = $("log"); l.textContent += line + "\n"; l.scrollTop = l.scrollHeight; }
+
+async function blobURL(url, type) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+  return URL.createObjectURL(new Blob([await r.arrayBuffer()], { type }));
+}
+
+async function loadFFmpeg() {
+  if (ffmpeg) return ffmpeg;
+  status(t("loading"));
+  const f = new FFmpeg();
+  f.on("log", ({ message }) => {
+    log(message);
+    const m = /time=(\d+):(\d+):([\d.]+)/.exec(message);
+    if (m && f.onTime) f.onTime(+m[1] * 3600 + +m[2] * 60 + +m[3]);
+  });
+  await f.load({
+    coreURL: await blobURL(CORE + "ffmpeg-core.js", "text/javascript"),
+    wasmURL: await blobURL(CORE + "ffmpeg-core.wasm", "application/wasm"),
+  });
+  return (ffmpeg = f);
+}
+
+function showResult(r) {
+  $("download").textContent = t("download", r.filename);
+  $("summary").textContent = t("summary", r.packets, r.nulls, r.frames, r.nsym / dv.BAUD, Math.round(r.size / 1024));
+}
+
+async function convert() {
+  const s = settings(), bar = $("bar");
+  busy = true; update();
+  $("result").style.display = "none"; $("log").textContent = ""; bar.hidden = false; bar.removeAttribute("value");
+  try {
+    const f = await loadFFmpeg();
+    const frames = dv.loopFrames(s.seconds, s.pilots), v = dv.encodingSettings(s.pilots, s.width);
+    const inName = "input" + (/\.[A-Za-z0-9]{1,5}$/.exec(file.name)?.[0] || ".mp4");
+    await f.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
+    const length = Math.min(s.seconds, duration ? Math.max(0.1, duration - s.start) : s.seconds);
+    bar.max = 1; bar.value = 0;
+    status(t("encoding", 0, length));
+    f.onTime = (sec) => { bar.value = Math.min(1, sec / length) * 0.9; status(t("encoding", Math.min(sec, length), length)); };
+    const code = await f.exec(dv.ffmpegArgs(inName, "out.ts", s.start, s.seconds, v, s.name, s.provider));
+    f.onTime = null;
+    await f.deleteFile(inName);
+    if (code !== 0) throw new Error(`FFmpeg exit ${code}`);
+    const ts = await f.readFile("out.ts");
+    await f.deleteFile("out.ts");
+    if (ts.length < 10 * dv.PKT) throw new Error(t("noVideo"));
+    const r = await dv.buildImage(ts, frames, {
+      pilots: s.pilots, name: s.name, provider: s.provider,
+      onProgress: (n, m) => { bar.value = 0.9 + 0.1 * n / m; status(t("dvbs2", n, m)); },
+    });
+    const filename = file.name.replace(/\.[^.]*$/, "") + "_video.bin";
+    const a = $("download");
+    if (a.href) URL.revokeObjectURL(a.href);
+    a.href = URL.createObjectURL(new Blob([r.image], { type: "application/octet-stream" }));
+    a.download = filename;
+    lastResult = { ...r, filename, frames, size: r.image.length };
+    showResult(lastResult);
+    $("result").style.display = "block";
+    bar.value = 1;
+    status("");
+    $("result").scrollIntoView({ behavior: "smooth" });
+  } catch (e) {
+    console.error(e);
+    status(t("failed") + (e.message || e), true);
+    bar.hidden = true;
+  } finally {
+    busy = false; update();
+  }
+}
+
+$("file").addEventListener("change", () => {
+  file = $("file").files[0] || null;
+  duration = 0; lastResult = null; $("result").style.display = "none"; $("fileinfo").textContent = "";
+  const p = $("preview");
+  if (p.src) URL.revokeObjectURL(p.src);
+  if (file) {
+    p.src = URL.createObjectURL(file);
+    p.style.display = "block";
+  } else {
+    p.removeAttribute("src"); p.style.display = "none";
+  }
+  update();
+});
+$("preview").addEventListener("loadedmetadata", () => {
+  const p = $("preview");
+  duration = isFinite(p.duration) ? p.duration : 0;
+  dims = [p.videoWidth, p.videoHeight];
+  if (duration) {
+    $("fileinfo").textContent = t("duration", duration, ...dims);
+    const max = dv.maxSeconds(settings().pilots);
+    $("seconds").value = Math.max(1, Math.min(20, Math.floor((duration - settings().start) * 10) / 10, Math.floor(max)));
+  }
+  update();
+});
+$("preview").addEventListener("pause", () => {     // pausing the preview picks the start of the loop
+  const p = $("preview");
+  if (p.currentTime > 0 && !p.ended && !busy) { $("start").value = p.currentTime.toFixed(1); update(); }
+});
+["start", "seconds", "width", "pilots", "name", "provider"].forEach((id) => $(id).addEventListener("input", update));
+$("go").addEventListener("click", convert);
+document.querySelectorAll("[data-lang]").forEach((b) => b.addEventListener("click", () => {
+  lang = b.dataset.lang; localStorage.setItem("lang", lang); applyLang();
+}));
+applyLang();
+</script>
+</body>
+</html>
