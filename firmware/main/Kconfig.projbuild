@@ -17,4 +17,12 @@ config DATV_BOARD_XIAO_C3
 
 endchoice
 
+config DATV_BUILTIN_BEACON
+    bool "Transmit the built-in test card when the flash holds no loop"
+    default y
+    help
+        Without it the firmware transmits nothing until a loop is stored in the "video" partition (VIDW, from ESP32-ATV's app
+        or tx/c3_vidw.py): a firmware for everyone (ESP32-ATV's web build) must not send a test card without the operator's
+        callsign.
+
 endmenu

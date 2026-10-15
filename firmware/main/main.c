@@ -1097,6 +1097,10 @@ static void beacon_dc_say(void) {
  * The file's symbol rate is a little below 333 kBd: the symbol takes 484 instead of 480 cycles, and the 4 spare cycles absorb the
  * stall of the data buffer read (about 20 cycles, every 16 symbols). Code rate, pilots and service come from the file. */
 #include "esp_partition.h"
+#include "esp_app_desc.h"
+#ifndef CONFIG_DATV_BUILTIN_BEACON                                   /* Kconfig leaves a bool that is off undefined */
+#define CONFIG_DATV_BUILTIN_BEACON 0
+#endif
 #include "esp_rom_crc.h"
 #include "hal/spimem_flash_ll.h"
 #include "soc/spi_mem_struct.h"
@@ -1105,6 +1109,8 @@ typedef struct {
     uint32_t version, nsym, baud, bytes, crc;                        /* bytes: the symbol data and VIDEO_TAIL bytes repeated past its end */
     uint8_t pilots, modcod, flags, pad;                              /* flags (version 3): bit 0 short FECFRAMEs */
     char service[32], provider[32];
+    uint32_t freq_khz;                                               /* version 3: frequency and DAC amplitude of the loop; 0: the panel's */
+    uint16_t amp, pad2;
 } video_hdr_t;
 #define VIDEO_HEADER 4096u
 #define VIDEO_TAIL 64u                                               /* one SPI1 read may run past the end of the loop */
@@ -1164,8 +1170,9 @@ static const video_hdr_t *video_find(void) {                        /* the mappe
         return NULL;
     }
     video_map = h;
-    say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd, MODCOD %u%s, S %lu\r\n", v->service, v->provider, (unsigned long)v->nsym,
-        (unsigned long)v->baud, (unsigned)v->modcod, (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? " short" : "", (unsigned long)S);
+    say("VIDEO %.31s / %.31s, %lu symbols at %lu Bd, MODCOD %u%s, S %lu, %lu kHz amp %u\r\n", v->service, v->provider, (unsigned long)v->nsym,
+        (unsigned long)v->baud, (unsigned)v->modcod, (v->version >= 3u && (v->flags & VIDEO_SHORT)) ? " short" : "", (unsigned long)S,
+        (unsigned long)(v->version >= 3u ? v->freq_khz : 0u), (unsigned)(v->version >= 3u ? v->amp : 0u));
     static char line[20];
     snprintf(line, sizeof(line), "VIDEO %lus SR%lu", (unsigned long)((v->nsym + v->baud / 2u) / v->baud), (unsigned long)((v->baud + 500u) / 1000u));
     panel_video(line);
@@ -1215,6 +1222,9 @@ static int beacon_fail(const char *msg, void *a, void *b, void *c) {
 static int beacon_run(void) {
     const panel_cfg_t *p = &panel_cfg;
     const video_hdr_t *v = p->video ? video_find() : NULL;          /* the panel's source; the test card when there is no video */
+#if !CONFIG_DATV_BUILTIN_BEACON
+    if (!v) return beacon_fail("no loop", NULL, NULL, NULL);       /* web build: nothing without the operator's loop (VIDW) */
+#endif
     const uint32_t baud = v ? v->baud : panel_sr_baud[p->sr], period = 20, S = v ? video_s(baud) : CPU_HZ / baud / period;
     uint8_t *loop;
     uint32_t nsym, chunk;
@@ -1241,9 +1251,13 @@ static int beacon_run(void) {
     int32_t *T = malloc(lutt_bytes(S));
     float *hb = malloc(8 * S * sizeof(float));
     if (!T || !hb) return beacon_fail("no memory", loop, T, hb);
-    lut_build_t(T, S, 0, 0.35f, (float)panel_amp(), beacon_dc[0], beacon_dc[1], BEACON_IQ_GAIN, BEACON_IQ_PHASE, hb);
+    /* a version 3 loop carries its own frequency and level (set on the phone with it); else the panel's */
+    const bool own = v && v->version >= 3u;
+    const uint32_t fkhz = own && v->freq_khz >= TX_FMIN_KHZ && v->freq_khz <= TX_FMAX_KHZ ? v->freq_khz : p->fkhz;
+    const float amp = own && v->amp >= 1u && v->amp <= 480u ? (float)v->amp : (float)panel_amp();
+    lut_build_t(T, S, 0, 0.35f, amp, beacon_dc[0], beacon_dc[1], BEACON_IQ_GAIN, BEACON_IQ_PHASE, hb);
     free(hb);
-    if (!tune(p->fkhz)) return beacon_fail("frequency", loop, T, NULL);
+    if (!tune(fkhz)) return beacon_fail("frequency", loop, T, NULL);
     const sample_clock_t symbol_clock = sample_clock_init(CPU_HZ, baud);
     for (uint32_t g = 0; g < 4; ++g) c->t[g] = T + g * S * 16;
     c->ring = loop;
@@ -1415,6 +1429,7 @@ static void handle(char *line) {
     host_seen = true;                                                /* a valid command: the host has taken over */
     if (!strcmp(line, "INFO")) {
         say("ESP32DATV 1 PA_GPIO %u\r\n", (unsigned)PA_ENABLE_GPIO);
+        say("FW %s%s\r\n", esp_app_get_description()->version, CONFIG_DATV_BUILTIN_BEACON ? "" : " no-builtin-beacon");
         say("BEACON %lu Bd QPSK %s %s frames x %lu, pilots %u\r\n", (unsigned long)BEACON_BAUD, BEACON_FEC,
             BEACON_FRAME_SHORT ? "short" : "normal", (unsigned long)benc_frames(), (unsigned)BEACON_PILOTS);
         const video_hdr_t *v = video_find();
