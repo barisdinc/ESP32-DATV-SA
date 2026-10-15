@@ -1124,6 +1124,9 @@ static uint32_t video_addr;                                          /* flash ad
 static bool video_checked;
 
 static uint32_t video_sper(uint32_t baud) { return (CPU_HZ + baud / 2u) / baud; }   /* cycles per symbol */
+/* PLFRAME of the video: normal QPSK frames (360 slots), whatever frame size the built-in beacon has (benc_frame_syms
+ * follows the beacon, short frames in this fork) */
+static uint32_t video_frame_syms(bool pilots) { return 90u + 360u * 90u + (pilots ? 36u * ((360u - 1u) / 16u) : 0u); }
 
 static const video_hdr_t *video_find(void) {                        /* the mapped partition when it holds a valid video (checked once) */
     if (video_checked) return video;
@@ -1140,7 +1143,7 @@ static const video_hdr_t *video_find(void) {                        /* the mappe
     const char *why = NULL;
     if (memcmp(v->magic, "DATVVID1", 8) || v->version != 2) why = "none";
     else if (S != 24u || sper <= 20u * S || sper > 20u * S + 16u || v->modcod != VIDEO_MODCOD || v->nsym == 0 ||
-             v->nsym % (2u * benc_frame_syms(v->pilots != 0)))
+             v->nsym % (2u * video_frame_syms(v->pilots != 0)))
         why = "unsupported format";
     else if (v->bytes != v->nsym / 4u + VIDEO_TAIL || VIDEO_HEADER + v->bytes > part->size) why = "bad length";
     else if (esp_rom_crc32_le(0, (const uint8_t *)map + VIDEO_HEADER, v->bytes) != v->crc) why = "bad CRC";
@@ -1210,7 +1213,7 @@ static int beacon_run(void) {
         loop = malloc(VIDEO_RING);
         if (!loop) return beacon_fail("no memory", NULL, NULL, NULL);
         nsym = v->nsym;
-        chunk = 4u * benc_frame_syms(v->pilots != 0);                /* 4 PLFRAMEs (0.4 s): the boundaries stay in the LDPC parity */
+        chunk = 4u * video_frame_syms(v->pilots != 0);               /* 4 PLFRAMEs (0.4 s): the boundaries stay in the LDPC parity */
     } else {
         const bool builtin = p->pilots == BEACON_PILOTS && !strcmp(p->service, BEACON_SERVICE) && !strcmp(p->provider, BEACON_PROVIDER);
         const size_t bytes = (size_t)(beacon_bin_end - beacon_bin_start);
